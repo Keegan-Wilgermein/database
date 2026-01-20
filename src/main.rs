@@ -7,7 +7,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let path = format!("{}/database", path);
     let manager = DatabaseManager::new(path)?;
 
-    println!("{:?}", manager);
+    println!("{:?}", manager.locate());
 
     Ok(())
 }

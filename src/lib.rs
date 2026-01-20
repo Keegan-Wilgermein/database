@@ -1,10 +1,10 @@
 //! # Database
 //! `Database` is a file management system designed to make reading and writing to a local database easier
 
-use std::{collections::HashSet, error::Error, fs::{self, remove_dir, remove_dir_all}, path::{Path, PathBuf}};
+use std::{error::Error, fs::{self, remove_dir, remove_dir_all}, path::{Path, PathBuf}};
 
 // -------- Structs --------
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DatabaseManager {
     path: Box<PathBuf>,
 }
@@ -97,6 +97,10 @@ impl DatabaseManager {
         }
 
         Ok(())
+    }
+
+    pub fn locate(&self) -> PathBuf {
+        *self.path.clone()
     }
 }
 
