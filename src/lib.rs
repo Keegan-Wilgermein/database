@@ -23,13 +23,12 @@ impl Error for Errors {}
 // -------- Structs --------
 /// Used for generating paths
 #[derive(PartialEq)]
-pub struct GenPathFrom;
+pub struct GenPath;
 
-impl GenPathFrom {
+impl GenPath {
     /// Generates a path from the working directory
     /// # Params
-    /// - `Name` is appended to the end of the path after truncation or replaces the whole path if an absolute path is passed
-    /// - `Steps` is used to truncate the end of the path the specified amount of times
+    /// - Truncates the end of the path `steps` number of times
     /// # Errors
     /// This function returns an error when:
     /// - The working directory doesn't exist
@@ -45,36 +44,30 @@ impl GenPathFrom {
     /// #
     /// # fn main() -> Result<(), Box<dyn Error>> {
     /// #
-    /// let working_dir = PathBuf::from("./folder1/folder2/folder3/Test");
-    /// let path = GenPathFrom::working_dir("Test", 0)?;
+    /// let working_dir = PathBuf::from("./folder1/folder2/folder3");
+    /// let path = GenPath::working_dir(0)?;
     /// assert_eq!(working_dir, path);
     /// 
-    /// let truncated = PathBuf::from("./folder1/folder2/Test");
-    /// let path = GenPathFrom::working_dir("Test", 1)?;
+    /// let truncated = PathBuf::from("./folder1/folder2");
+    /// let path = GenPath::working_dir(1)?;
     /// assert_eq!(truncated, path);
     /// #
     /// # Ok(())
     /// #
     /// # }
     /// ```
-    pub fn working_dir<P, I>(name: P, steps: I) -> Result<PathBuf, Box<dyn Error>>
+    pub fn working_dir<I>(steps: I) -> Result<PathBuf, Box<dyn Error>>
     where
         i32: From<I>,
-        P: AsRef<Path>,
-        PathBuf: From<P>,
     {
-        let working_dir = current_dir()?;
 
-        let mut working_dir = truncate(working_dir, steps.into())?;
-
-        working_dir.push(name);
+        let working_dir = truncate(current_dir()?, steps.into())?;
 
         Ok(working_dir)
     }
 
     /// Generates a path from the directory of the current executable
     /// # Params
-    /// - `Name` is appended to the end of the path after truncation or replaces the whole path if an absolute path is passed
     /// - `Steps` is used to truncate the end of the path the specified amount of times
     /// # Errors
     /// - `Steps` is greater than the length of the path
@@ -86,29 +79,24 @@ impl GenPathFrom {
     /// #
     /// # fn main() -> Result<(), Box<dyn Error>> {
     /// #
-    /// let current_exe = PathBuf::from("./folder1/folder2/folder3/Test");
-    /// let path = GenPathFrom::current_exe("Test", 0)?;
+    /// let current_exe = PathBuf::from("./folder1/folder2/folder3");
+    /// let path = GenPath::current_exe(0)?;
     /// assert_eq!(current_exe, path);
     /// 
-    /// let truncated = PathBuf::from("./folder1/folder2/Test");
-    /// let path = GenPathFrom::current_exe("Test", 1)?;
+    /// let truncated = PathBuf::from("./folder1/folder2");
+    /// let path = GenPath::current_exe(1)?;
     /// assert_eq!(truncated, path);
     /// #
     /// # Ok(())
     /// #
     /// # }
     /// ```
-    pub fn current_exe<P, I>(name: P, steps: I) -> Result<PathBuf, Box<dyn Error>>
+    pub fn current_exe<I>(steps: I) -> Result<PathBuf, Box<dyn Error>>
     where
         i32: From<I>,
-        P: AsRef<Path>,
-        PathBuf: From<P>,
     {
-        let exe = current_exe()?;
 
-        let mut exe = truncate(exe, steps.into())?;
-
-        exe.push(name);
+        let exe = truncate(current_exe()?, steps.into())?;
 
         Ok(exe)
     }
@@ -121,8 +109,11 @@ pub struct DatabaseManager {
 }
 
 impl DatabaseManager {
-
     /// Creates a new directory at `path` and returns `Self`
+    /// 
+    /// # Params
+    /// - Appends `name` to the end of `path`
+    /// - Creates a new directory at `path`
     /// 
     /// # Errors
     /// This function returns an error when:
@@ -135,19 +126,24 @@ impl DatabaseManager {
     /// ```no_run
     /// # use database::DatabaseManager;
     /// # use std::error::Error;
-    /// 
-    /// fn main() -> Result<(), Box<dyn Error>> {
-    ///     let path = "./folder/new_folder";
-    ///     let manager = DatabaseManager::new(path)?;
-    /// 
-    ///     Ok(())
-    /// }
+    /// #
+    /// # fn main() -> Result<(), Box<dyn Error>> {
+    /// let path = "./folder/other_folder";
+    /// // Creates a folder at "./folder/other_folder/Database"
+    /// let manager = DatabaseManager::new(path, "Database")?;
+    /// #
+    /// # Ok(())
+    /// # }
     /// ```
-    pub fn new<P>(path: P) -> Result<Self, Box<dyn Error>>
+    pub fn new<P, S>(path: P, name: S) -> Result<Self, Box<dyn Error>>
     where
-        P: AsRef<Path>,
-        PathBuf: From<P>,
+        P: AsRef<Path>, PathBuf: From<P>,
+        S: AsRef<Path>, PathBuf: From<S>,
     {
+        let mut path: PathBuf = path.into();
+
+        path.push(name);
+
         create_dir(&path)?;
 
         let manager = Self {
@@ -180,7 +176,7 @@ impl DatabaseManager {
     /// #
     /// # fn main() -> Result<(), Box<dyn Error>> {
     ///     # let path = "./folder/new_folder";
-    ///     # let manager = DatabaseManager::new(path)?;
+    ///     # let manager = DatabaseManager::new(path, "Database")?;
     /// #
     ///     manager.delete_database(false);
     /// #
@@ -194,7 +190,7 @@ impl DatabaseManager {
     /// #
     /// # fn main() -> Result<(), Box<dyn Error>> {
     ///     # let path = "./folder/new_folder";
-    ///     # let manager = DatabaseManager::new(path)?;
+    ///     # let manager = DatabaseManager::new(path, "Database")?;
     /// #
     ///     manager.delete_database(true);
     /// #
@@ -220,9 +216,10 @@ impl DatabaseManager {
     /// #
     /// # fn main() -> Result<(), Box<dyn Error>> {
     ///     let path = "./folder/new_folder";
-    ///     let manager = DatabaseManager::new(path)?;
+    ///     let manager = DatabaseManager::new(path, "Database")?;
     /// 
-    ///     let path = PathBuf::from(path);
+    ///     let mut path = PathBuf::from(path);
+    ///     path.push("Database");
     ///     assert_eq!(manager.locate(), path);
     /// #
     ///     # Ok(())
