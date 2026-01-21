@@ -1,10 +1,121 @@
 //! # Database
 //! `Database` is a file management system designed to make reading and writing to a local database easier
 
-use std::{error::Error, fs::{self, remove_dir, remove_dir_all}, path::{Path, PathBuf}};
+use std::{env::{current_dir, current_exe}, error::Error, fmt::Display, fs::{create_dir, remove_dir, remove_dir_all}, path::{Path, PathBuf}};
+
+// -------- Enums --------
+/// Used for generating errors on funtions that don't actually produce any errors
+#[derive(Debug)]
+enum Errors {
+    PathOverflow,
+}
+
+impl Display for Errors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Errors::PathOverflow => write!(f, "Steps exceed length of path"),
+        }
+    }
+}
+
+impl Error for Errors {}
 
 // -------- Structs --------
+/// Used for generating paths
+#[derive(PartialEq)]
+pub struct GenPathFrom;
+
+impl GenPathFrom {
+    /// Generates a path from the working directory
+    /// # Params
+    /// - `Name` is appended to the end of the path after truncation or replaces the whole path if an absolute path is passed
+    /// - `Steps` is used to truncate the end of the path the specified amount of times
+    /// # Errors
+    /// This function returns an error when:
+    /// - The working directory doesn't exist
+    /// - User lacks permissions to access the working directory
+    /// 
+    /// **Note**: The function will still fail if the user can access the truncated directory but not the working directory
+    /// - `Steps` is greater than the length of the path
+    /// # Examples
+    /// ```no_run
+    /// # use database::*;
+    /// # use std::error::Error;
+    /// # use std::path::PathBuf;
+    /// #
+    /// # fn main() -> Result<(), Box<dyn Error>> {
+    /// #
+    /// let working_dir = PathBuf::from("./folder1/folder2/folder3/Test");
+    /// let path = GenPathFrom::working_dir("Test", 0)?;
+    /// assert_eq!(working_dir, path);
+    /// 
+    /// let truncated = PathBuf::from("./folder1/folder2/Test");
+    /// let path = GenPathFrom::working_dir("Test", 1)?;
+    /// assert_eq!(truncated, path);
+    /// #
+    /// # Ok(())
+    /// #
+    /// # }
+    /// ```
+    pub fn working_dir<P, I>(name: P, steps: I) -> Result<PathBuf, Box<dyn Error>>
+    where
+        i32: From<I>,
+        P: AsRef<Path>,
+        PathBuf: From<P>,
+    {
+        let working_dir = current_dir()?;
+
+        let mut working_dir = truncate(working_dir, steps.into())?;
+
+        working_dir.push(name);
+
+        Ok(working_dir)
+    }
+
+    /// Generates a path from the directory of the current executable
+    /// # Params
+    /// - `Name` is appended to the end of the path after truncation or replaces the whole path if an absolute path is passed
+    /// - `Steps` is used to truncate the end of the path the specified amount of times
+    /// # Errors
+    /// - `Steps` is greater than the length of the path
+    /// # Examples
+    /// ```no_run
+    /// # use database::*;
+    /// # use std::error::Error;
+    /// # use std::path::PathBuf;
+    /// #
+    /// # fn main() -> Result<(), Box<dyn Error>> {
+    /// #
+    /// let current_exe = PathBuf::from("./folder1/folder2/folder3/Test");
+    /// let path = GenPathFrom::current_exe("Test", 0)?;
+    /// assert_eq!(current_exe, path);
+    /// 
+    /// let truncated = PathBuf::from("./folder1/folder2/Test");
+    /// let path = GenPathFrom::current_exe("Test", 1)?;
+    /// assert_eq!(truncated, path);
+    /// #
+    /// # Ok(())
+    /// #
+    /// # }
+    /// ```
+    pub fn current_exe<P, I>(name: P, steps: I) -> Result<PathBuf, Box<dyn Error>>
+    where
+        i32: From<I>,
+        P: AsRef<Path>,
+        PathBuf: From<P>,
+    {
+        let exe = current_exe()?;
+
+        let mut exe = truncate(exe, steps.into())?;
+
+        exe.push(name);
+
+        Ok(exe)
+    }
+}
+
 #[derive(Debug)]
+/// Manages the database it was created with
 pub struct DatabaseManager {
     path: Box<PathBuf>,
 }
@@ -32,11 +143,12 @@ impl DatabaseManager {
     ///     Ok(())
     /// }
     /// ```
-    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>>
+    pub fn new<P>(path: P) -> Result<Self, Box<dyn Error>>
     where
-        PathBuf: From<P>
+        P: AsRef<Path>,
+        PathBuf: From<P>,
     {
-        fs::create_dir(&path)?;
+        create_dir(&path)?;
 
         let manager = Self {
             path: Box::new(path.into()),
@@ -99,9 +211,40 @@ impl DatabaseManager {
         Ok(())
     }
 
+    /// Locates the path to the managed database
+    /// # Examples
+    /// ```no_run
+    /// # use database::DatabaseManager;
+    /// # use std::error::Error;
+    /// # use std::path::PathBuf;
+    /// #
+    /// # fn main() -> Result<(), Box<dyn Error>> {
+    ///     let path = "./folder/new_folder";
+    ///     let manager = DatabaseManager::new(path)?;
+    /// 
+    ///     let path = PathBuf::from(path);
+    ///     assert_eq!(manager.locate(), path);
+    /// #
+    ///     # Ok(())
+    /// # }
+    /// ```
     pub fn locate(&self) -> PathBuf {
         *self.path.clone()
     }
 }
 
 // -------- Functions --------
+/// Truncates the end of a path the specified amount of times
+fn truncate(mut path: PathBuf, steps: i32) -> Result<PathBuf, Errors> {
+    let parents = path.ancestors().count() - 1;
+
+    if parents as i32 <= steps {
+        return Err(Errors::PathOverflow.into())
+    }
+
+    for _ in 0..steps {
+        path.pop();
+    }
+
+    Ok(path)
+}
