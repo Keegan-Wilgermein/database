@@ -8,5 +8,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("{:?}", manager.locate());
 
+    manager.delete_database(ForceDeletion::NoForce)?;
+
     Ok(())
 }

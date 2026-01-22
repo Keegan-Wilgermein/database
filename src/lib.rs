@@ -5,7 +5,7 @@ use std::{env::{current_dir, current_exe}, error::Error, fmt::Display, fs::{crea
 
 // -------- Enums --------
 /// Used for generating errors on funtions that don't actually produce any errors
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 enum Errors {
     PathStepOverflow,
     NoClosestDir,
@@ -22,9 +22,33 @@ impl Display for Errors {
 
 impl Error for Errors {}
 
+#[derive(Debug, PartialEq, Clone)]
+pub enum ForceDeletion {
+    Force,
+    NoForce,
+}
+
+impl Into<bool> for ForceDeletion {
+    fn into(self) -> bool {
+        match self {
+            ForceDeletion::Force => true,
+            ForceDeletion::NoForce => false,
+        }
+    }
+}
+
+impl From<bool> for ForceDeletion {
+    fn from(value: bool) -> Self {
+        match value {
+            true => ForceDeletion::Force,
+            false => ForceDeletion::NoForce,
+        }
+    }
+}
+
 // -------- Structs --------
 /// Used for generating paths
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug, Clone)]
 pub struct GenPath;
 
 impl GenPath {
@@ -58,9 +82,9 @@ impl GenPath {
     /// #
     /// # }
     /// ```
-    pub fn from_working_dir<I>(steps: I) -> Result<PathBuf, Box<dyn Error>>
+    pub fn from_working_dir<T>(steps: T) -> Result<PathBuf, Box<dyn Error>>
     where
-        i32: From<I>,
+        i32: From<T>,
     {
 
         let working_dir = truncate(current_dir()?, steps.into())?;
@@ -93,9 +117,9 @@ impl GenPath {
     /// #
     /// # }
     /// ```
-    pub fn from_exe<I>(steps: I) -> Result<PathBuf, Box<dyn Error>>
+    pub fn from_exe<T>(steps: T) -> Result<PathBuf, Box<dyn Error>>
     where
-        i32: From<I>,
+        i32: From<T>,
     {
         let steps: i32 = steps.into();
 
@@ -141,7 +165,7 @@ impl GenPath {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 /// Manages the database it was created with
 pub struct DatabaseManager {
     path: Box<PathBuf>,
@@ -176,10 +200,10 @@ impl DatabaseManager {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn new<'a, P, S>(path: &'a P, name: S) -> Result<Self, Box<dyn Error>>
+    pub fn new<'a, P, T>(path: &'a P, name: T) -> Result<Self, Box<dyn Error>>
     where
         P: AsRef<Path>, PathBuf: From<&'a P>, P: ?Sized,
-        S: AsRef<Path>, PathBuf: From<S>,
+        T: AsRef<Path>, PathBuf: From<T>,
     {
         let mut path: PathBuf = path.into();
 
@@ -238,8 +262,11 @@ impl DatabaseManager {
     ///     # Ok(())
     /// # }
     /// ```
-    pub fn delete_database(self, force: bool) -> Result<(), Box<dyn Error>> {
-        if force {
+    pub fn delete_database<T>(self, force: T) -> Result<(), Box<dyn Error>>
+    where
+        T: Into<bool>,
+    {
+        if force.into() {
             remove_dir_all(*self.path)?;
         } else {
             remove_dir(*self.path)?;
@@ -267,6 +294,10 @@ impl DatabaseManager {
     /// ```
     pub fn locate(&self) -> PathBuf {
         *self.path.clone()
+    }
+
+    pub fn get_children() {
+        
     }
 }
 
