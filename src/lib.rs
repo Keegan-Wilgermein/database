@@ -8,12 +8,14 @@ use std::{env::{current_dir, current_exe}, error::Error, fmt::Display, fs::{crea
 #[derive(Debug)]
 enum Errors {
     PathStepOverflow,
+    NoClosestDir,
 }
 
 impl Display for Errors {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Errors::PathStepOverflow => write!(f, "Steps exceed length of path"),
+            Errors::NoClosestDir => write!(f, "Name not found in path"),
         }
     }
 }
@@ -100,6 +102,42 @@ impl GenPath {
         let exe = truncate(current_exe()?, steps + 1)?;
 
         Ok(exe)
+    }
+
+    /// Generates a `PathBuf` from the name of a directory
+    /// 
+    /// Looks for directories along the path to the current executable and returns the first match
+    /// # Params
+    /// - `name` of directory to look for
+    /// 
+    /// # Errors
+    /// This function will return an error when:
+    /// - `name` not found in path to current exe
+    /// 
+    /// This function will not return if a file matching `name` is found and will continue searchng until a directory is found or it returns the above error
+    /// # Examples
+    /// ```no_run
+    /// # use database::*;
+    /// # use std::path::PathBuf;
+    /// // Exe location is ./folder/directory/other/exe
+    /// let path = GenPath::from_closest_name("directory").unwrap();
+    /// assert_eq!(path, PathBuf::from("./folder/directory"));
+    /// ```
+    pub fn from_closest_name<P>(name: P) -> Result<PathBuf, Box<dyn Error>>
+    where
+        P: AsRef<Path>, PathBuf: From<P>,
+    {
+        let exe = current_exe()?;
+
+        for path in exe.ancestors() {
+            if path.ends_with(&name) {
+                if path.is_dir() {
+                    return Ok(path.to_path_buf())
+                }
+            }
+        }
+
+        Err(Errors::NoClosestDir.into())
     }
 }
 
@@ -238,7 +276,7 @@ fn truncate(mut path: PathBuf, steps: i32) -> Result<PathBuf, Errors> {
     let parents = path.ancestors().count() - 1;
 
     if parents as i32 <= steps {
-        return Err(Errors::PathStepOverflow.into())
+        return Err(Errors::PathStepOverflow)
     }
 
     for _ in 0..steps {
