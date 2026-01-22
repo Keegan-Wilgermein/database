@@ -95,8 +95,9 @@ impl GenPath {
     where
         i32: From<I>,
     {
+        let steps: i32 = steps.into();
 
-        let exe = truncate(current_exe()?, steps.into())?;
+        let exe = truncate(current_exe()?, steps + 1)?;
 
         Ok(exe)
     }
@@ -113,6 +114,8 @@ impl DatabaseManager {
     /// 
     /// # Params
     /// - Appends `name` to the end of `path`
+    /// 
+    /// **Note**: `name` is case insensitive
     /// - Creates a new directory at `path`
     /// 
     /// # Errors

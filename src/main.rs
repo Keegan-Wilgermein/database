@@ -2,9 +2,9 @@ use std::{error::Error};
 use database::*;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let path = GenPath::working_dir(0)?;
+    let path = GenPath::current_exe(2)?;
 
-    let manager = DatabaseManager::new(path, "Database")?;
+    let manager = DatabaseManager::new(path, "database")?;
 
     println!("{:?}", manager.locate());
 
