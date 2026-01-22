@@ -7,13 +7,13 @@ use std::{env::{current_dir, current_exe}, error::Error, fmt::Display, fs::{crea
 /// Used for generating errors on funtions that don't actually produce any errors
 #[derive(Debug)]
 enum Errors {
-    PathOverflow,
+    PathStepOverflow,
 }
 
 impl Display for Errors {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Errors::PathOverflow => write!(f, "Steps exceed length of path"),
+            Errors::PathStepOverflow => write!(f, "Steps exceed length of path"),
         }
     }
 }
@@ -45,18 +45,18 @@ impl GenPath {
     /// # fn main() -> Result<(), Box<dyn Error>> {
     /// #
     /// let working_dir = PathBuf::from("./folder1/folder2/folder3");
-    /// let path = GenPath::working_dir(0)?;
+    /// let path = GenPath::from_working_dir(0)?;
     /// assert_eq!(working_dir, path);
     /// 
     /// let truncated = PathBuf::from("./folder1/folder2");
-    /// let path = GenPath::working_dir(1)?;
+    /// let path = GenPath::from_working_dir(1)?;
     /// assert_eq!(truncated, path);
     /// #
     /// # Ok(())
     /// #
     /// # }
     /// ```
-    pub fn working_dir<I>(steps: I) -> Result<PathBuf, Box<dyn Error>>
+    pub fn from_working_dir<I>(steps: I) -> Result<PathBuf, Box<dyn Error>>
     where
         i32: From<I>,
     {
@@ -80,18 +80,18 @@ impl GenPath {
     /// # fn main() -> Result<(), Box<dyn Error>> {
     /// #
     /// let current_exe = PathBuf::from("./folder1/folder2/folder3");
-    /// let path = GenPath::current_exe(0)?;
+    /// let path = GenPath::from_exe(0)?;
     /// assert_eq!(current_exe, path);
     /// 
     /// let truncated = PathBuf::from("./folder1/folder2");
-    /// let path = GenPath::current_exe(1)?;
+    /// let path = GenPath::from_exe(1)?;
     /// assert_eq!(truncated, path);
     /// #
     /// # Ok(())
     /// #
     /// # }
     /// ```
-    pub fn current_exe<I>(steps: I) -> Result<PathBuf, Box<dyn Error>>
+    pub fn from_exe<I>(steps: I) -> Result<PathBuf, Box<dyn Error>>
     where
         i32: From<I>,
     {
@@ -132,15 +132,15 @@ impl DatabaseManager {
     /// #
     /// # fn main() -> Result<(), Box<dyn Error>> {
     /// let path = "./folder/other_folder";
-    /// // Creates a folder at "./folder/other_folder/Database"
-    /// let manager = DatabaseManager::new(path, "Database")?;
+    /// // Creates a folder at "./folder/other_folder/database"
+    /// let manager = DatabaseManager::new(&path, "database")?;
     /// #
     /// # Ok(())
     /// # }
     /// ```
-    pub fn new<P, S>(path: P, name: S) -> Result<Self, Box<dyn Error>>
+    pub fn new<'a, P, S>(path: &'a P, name: S) -> Result<Self, Box<dyn Error>>
     where
-        P: AsRef<Path>, PathBuf: From<P>,
+        P: AsRef<Path>, PathBuf: From<&'a P>, P: ?Sized,
         S: AsRef<Path>, PathBuf: From<S>,
     {
         let mut path: PathBuf = path.into();
@@ -179,7 +179,7 @@ impl DatabaseManager {
     /// #
     /// # fn main() -> Result<(), Box<dyn Error>> {
     ///     # let path = "./folder/new_folder";
-    ///     # let manager = DatabaseManager::new(path, "Database")?;
+    ///     # let manager = DatabaseManager::new(&path, "Database")?;
     /// #
     ///     manager.delete_database(false);
     /// #
@@ -193,7 +193,7 @@ impl DatabaseManager {
     /// #
     /// # fn main() -> Result<(), Box<dyn Error>> {
     ///     # let path = "./folder/new_folder";
-    ///     # let manager = DatabaseManager::new(path, "Database")?;
+    ///     # let manager = DatabaseManager::new(&path, "Database")?;
     /// #
     ///     manager.delete_database(true);
     /// #
@@ -218,11 +218,10 @@ impl DatabaseManager {
     /// # use std::path::PathBuf;
     /// #
     /// # fn main() -> Result<(), Box<dyn Error>> {
-    ///     let path = "./folder/new_folder";
-    ///     let manager = DatabaseManager::new(path, "Database")?;
+    ///     let mut path = PathBuf::from("./folder/new_folder");
+    ///     let manager = DatabaseManager::new(&path, "database")?;
     /// 
-    ///     let mut path = PathBuf::from(path);
-    ///     path.push("Database");
+    ///     path.push("database");
     ///     assert_eq!(manager.locate(), path);
     /// #
     ///     # Ok(())
@@ -239,7 +238,7 @@ fn truncate(mut path: PathBuf, steps: i32) -> Result<PathBuf, Errors> {
     let parents = path.ancestors().count() - 1;
 
     if parents as i32 <= steps {
-        return Err(Errors::PathOverflow.into())
+        return Err(Errors::PathStepOverflow.into())
     }
 
     for _ in 0..steps {
