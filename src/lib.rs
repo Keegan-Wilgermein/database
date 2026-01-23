@@ -1,7 +1,7 @@
 //! # Database
 //! `Database` is a file management system designed to make reading and writing to a local database easier
 
-use std::{env::{current_dir, current_exe}, error::Error, fmt::Display, fs::{create_dir, remove_dir, remove_dir_all}, path::{Path, PathBuf}};
+use std::{borrow::Borrow, collections::HashMap, default, env::{current_dir, current_exe}, error::Error, fmt::Display, fs::{create_dir, remove_dir, remove_dir_all, remove_file}, hash::Hash, path::{Path, PathBuf}};
 
 // -------- Enums --------
 /// Used for generating errors on funtions that don't actually produce any errors
@@ -9,6 +9,7 @@ use std::{env::{current_dir, current_exe}, error::Error, fmt::Display, fs::{crea
 enum Errors {
     PathStepOverflow,
     NoClosestDir,
+    NoMatchingID,
 }
 
 impl Display for Errors {
@@ -16,14 +17,17 @@ impl Display for Errors {
         match self {
             Errors::PathStepOverflow => write!(f, "Steps exceed length of path"),
             Errors::NoClosestDir => write!(f, "Name not found in path"),
+            Errors::NoMatchingID => write!(f, "No item matching ID exists"),
         }
     }
 }
 
 impl Error for Errors {}
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Default)]
+/// A replacement for `bool` simply for readability
 pub enum ForceDeletion {
+    #[default]
     Force,
     NoForce,
 }
@@ -48,7 +52,7 @@ impl From<bool> for ForceDeletion {
 
 // -------- Structs --------
 /// Used for generating paths
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Default)]
 pub struct GenPath;
 
 impl GenPath {
@@ -169,6 +173,7 @@ impl GenPath {
 /// Manages the database it was created with
 pub struct DatabaseManager {
     path: Box<PathBuf>,
+    items: HashMap<String, PathBuf>,
 }
 
 impl DatabaseManager {
@@ -200,9 +205,9 @@ impl DatabaseManager {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn new<'a, P, T>(path: &'a P, name: T) -> Result<Self, Box<dyn Error>>
+    pub fn new<P, T>(path: P, name: T) -> Result<Self, Box<dyn Error>>
     where
-        P: AsRef<Path>, PathBuf: From<&'a P>, P: ?Sized,
+        P: AsRef<Path>, PathBuf: From<P>,
         T: AsRef<Path>, PathBuf: From<T>,
     {
         let mut path: PathBuf = path.into();
@@ -213,66 +218,10 @@ impl DatabaseManager {
 
         let manager = Self {
             path: Box::new(path.into()),
+            items: HashMap::new(),
         };
 
         Ok(manager)
-    }
-
-    /// Deletes the passed database
-    /// 
-    /// # Params
-    /// If `force` is true, all items in the database will be deleted
-    /// 
-    /// If `force` is false, the database will be deleted only if it is empty
-    /// 
-    /// # Errors
-    /// This function returns an error when:
-    /// - `path` doesn't exist 
-    /// - The user lacks permissions to write at `path`
-    /// 
-    /// #### If `force` is false
-    /// - `path` is not empty
-    /// 
-    /// # Examples
-    /// #### Removing database when force is false
-    /// ```no_run
-    /// # use database::DatabaseManager;
-    /// # use std::error::Error;
-    /// #
-    /// # fn main() -> Result<(), Box<dyn Error>> {
-    ///     # let path = "./folder/new_folder";
-    ///     # let manager = DatabaseManager::new(&path, "Database")?;
-    /// #
-    ///     manager.delete_database(false);
-    /// #
-    ///     # Ok(())
-    /// # }
-    /// ```
-    /// #### Removing database when `force` is true
-    /// ```no_run
-    /// # use database::DatabaseManager;
-    /// # use std::error::Error;
-    /// #
-    /// # fn main() -> Result<(), Box<dyn Error>> {
-    ///     # let path = "./folder/new_folder";
-    ///     # let manager = DatabaseManager::new(&path, "Database")?;
-    /// #
-    ///     manager.delete_database(true);
-    /// #
-    ///     # Ok(())
-    /// # }
-    /// ```
-    pub fn delete_database<T>(self, force: T) -> Result<(), Box<dyn Error>>
-    where
-        T: Into<bool>,
-    {
-        if force.into() {
-            remove_dir_all(*self.path)?;
-        } else {
-            remove_dir(*self.path)?;
-        }
-
-        Ok(())
     }
 
     /// Locates the path to the managed database
@@ -296,8 +245,57 @@ impl DatabaseManager {
         *self.path.clone()
     }
 
-    pub fn get_children() {
-        
+    pub fn write(&mut self,) -> Option<Box<dyn Error>> {
+        todo!();
+    }
+
+    /// Deletes a directory or a file
+    /// 
+    /// Pass `""` or equivalent as `id` to delete database
+    pub fn delete<'a, K, T>(&mut self, id: &'a K, force: T) -> Option<Box<dyn Error>>
+    where
+        T: Into<bool>,
+        K: AsRef<Path>, PathBuf: From<&'a K>, String: Borrow<K>, K: Eq, K: Hash, K: ?Sized, &'a K: PartialEq<&'a str>,
+    {
+        if id == "" {
+            match delete_directory(&self.locate(), force) {
+                Some(error) => return Some(error),
+                None => return None,
+            }
+        }
+
+        let path = match self.locate_item(id) {
+            Ok(path) => path,
+            Err(error) => return Some(error),
+        };
+
+        if path.is_dir() {
+            match delete_directory(&path, force) {
+                Some(error) => return Some(error),
+                None => return None,
+            }
+        }
+
+        match remove_file(path) {
+            Ok(_) => return None,
+            Err(error) => return Some(error.into()),
+        }
+    }
+
+    pub fn locate_item<K>(&self, id: &K) -> Result<PathBuf, Box<dyn Error>>
+    where
+        String: Borrow<K>,
+        K: Eq,
+        K: Hash,
+        K: ?Sized,
+    {
+        let location = self.items.get(id);
+
+        if let Some(path) = location {
+            Ok(path.clone())
+        } else {
+            Err(Errors::NoMatchingID.into())
+        }
     }
 }
 
@@ -315,4 +313,37 @@ fn truncate(mut path: PathBuf, steps: i32) -> Result<PathBuf, Errors> {
     }
 
     Ok(path)
+}
+
+/// Deletes the passed directory
+/// 
+/// # Params
+/// If `force` is true, all items in the database will be deleted
+/// 
+/// If `force` is false, the database will be deleted only if it is empty
+/// 
+/// # Errors
+/// This function returns an error when:
+/// - `path` doesn't exist 
+/// - The user lacks permissions to write at `path`
+/// 
+/// #### If `force` is false
+/// - `path` is not empty
+fn delete_directory<T>(path: &PathBuf, force: T) -> Option<Box<dyn Error>>
+where
+    T: Into<bool>,
+{
+    if force.into() {
+        match remove_dir_all(path) {
+            Ok(_) => (),
+            Err(error) => return Some(error.into()),
+        };
+    } else {
+        match remove_dir(path) {
+            Ok(_) => (),
+            Err(error) => return Some(error.into()),
+        };
+    }
+
+    None
 }
