@@ -1,7 +1,7 @@
 //! # Database
 //! `Database` is a file management system designed to make reading and writing to a local database easier
 
-use std::{borrow::Borrow, collections::HashMap, default, env::{current_dir, current_exe}, error::Error, fmt::Display, fs::{create_dir, remove_dir, remove_dir_all, remove_file}, hash::Hash, path::{Path, PathBuf}};
+use std::{collections::HashMap, env::{current_dir, current_exe}, error::Error, fmt::Display, fs::{File, create_dir, remove_dir, remove_dir_all, remove_file}, hash::Hash, path::{Path, PathBuf}};
 
 // -------- Enums --------
 /// Used for generating errors on funtions that don't actually produce any errors
@@ -10,6 +10,8 @@ enum Errors {
     PathStepOverflow,
     NoClosestDir,
     NoMatchingID,
+    ItemAlreadyExists,
+    NotADirectory,
 }
 
 impl Display for Errors {
@@ -18,6 +20,8 @@ impl Display for Errors {
             Errors::PathStepOverflow => write!(f, "Steps exceed length of path"),
             Errors::NoClosestDir => write!(f, "Name not found in path"),
             Errors::NoMatchingID => write!(f, "No item matching ID exists"),
+            Errors::ItemAlreadyExists => write!(f, "Item already exists"),
+            Errors::NotADirectory => write!(f, "Expected directory but found file"),
         }
     }
 }
@@ -50,8 +54,34 @@ impl From<bool> for ForceDeletion {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Default)]
+/// A replacement for `bool` simply for readability
+pub enum ShouldSort {
+    #[default]
+    Sort,
+    NoSort,
+}
+
+impl Into<bool> for ShouldSort {
+    fn into(self) -> bool {
+        match self {
+            ShouldSort::Sort => true,
+            ShouldSort::NoSort => false,
+        }
+    }
+}
+
+impl From<bool> for ShouldSort {
+    fn from(value: bool) -> Self {
+        match value {
+            true => ShouldSort::Sort,
+            false => ShouldSort::NoSort,
+        }
+    }
+}
+
 // -------- Structs --------
-/// Used for generating paths
+/// Automatic path generation
 #[derive(PartialEq, Debug, Clone, Default)]
 pub struct GenPath;
 
@@ -86,12 +116,8 @@ impl GenPath {
     /// #
     /// # }
     /// ```
-    pub fn from_working_dir<T>(steps: T) -> Result<PathBuf, Box<dyn Error>>
-    where
-        i32: From<T>,
-    {
-
-        let working_dir = truncate(current_dir()?, steps.into())?;
+    pub fn from_working_dir(steps: i32) -> Result<PathBuf, Box<dyn Error>> {
+        let working_dir = truncate(current_dir()?, steps)?;
 
         Ok(working_dir)
     }
@@ -121,12 +147,7 @@ impl GenPath {
     /// #
     /// # }
     /// ```
-    pub fn from_exe<T>(steps: T) -> Result<PathBuf, Box<dyn Error>>
-    where
-        i32: From<T>,
-    {
-        let steps: i32 = steps.into();
-
+    pub fn from_exe(steps: i32) -> Result<PathBuf, Box<dyn Error>> {
         let exe = truncate(current_exe()?, steps + 1)?;
 
         Ok(exe)
@@ -151,10 +172,7 @@ impl GenPath {
     /// let path = GenPath::from_closest_name("directory").unwrap();
     /// assert_eq!(path, PathBuf::from("./folder/directory"));
     /// ```
-    pub fn from_closest_name<P>(name: P) -> Result<PathBuf, Box<dyn Error>>
-    where
-        P: AsRef<Path>, PathBuf: From<P>,
-    {
+    pub fn from_closest_name(name: impl AsRef<Path>) -> Result<PathBuf, Box<dyn Error>> {
         let exe = current_exe()?;
 
         for path in exe.ancestors() {
@@ -169,11 +187,40 @@ impl GenPath {
     }
 }
 
+/// Item identification and lookup
+#[derive(Debug, PartialEq, Eq, Hash, Clone, PartialOrd, Ord)]
+pub struct ItemId(String);
+
+impl<T> From<T> for ItemId
+where
+    T: Into<String>,
+{
+    fn from(s: T) -> Self {
+        ItemId(s.into())
+    }
+}
+
+impl ItemId {
+    /// Returns the ID used for the actual database
+    pub fn database_id() -> Self {
+        Self(String::new())
+    }
+
+    /// Returns `Self` with the given `id`
+    pub fn id(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_string(self) -> String {
+        self.0
+    }
+}
+
 #[derive(Debug, PartialEq)]
 /// Manages the database it was created with
 pub struct DatabaseManager {
-    path: Box<PathBuf>,
-    items: HashMap<String, PathBuf>,
+    path: PathBuf,
+    items: HashMap<ItemId, PathBuf>,
 }
 
 impl DatabaseManager {
@@ -205,91 +252,135 @@ impl DatabaseManager {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn new<P, T>(path: P, name: T) -> Result<Self, Box<dyn Error>>
-    where
-        P: AsRef<Path>, PathBuf: From<P>,
-        T: AsRef<Path>, PathBuf: From<T>,
-    {
-        let mut path: PathBuf = path.into();
+    pub fn new(path: impl AsRef<Path>, name: impl AsRef<Path>) -> Result<Self, Box<dyn Error>> {
+        let mut path: PathBuf = path.as_ref().to_path_buf();
 
         path.push(name);
 
         create_dir(&path)?;
 
         let manager = Self {
-            path: Box::new(path.into()),
+            path: path.into(),
             items: HashMap::new(),
         };
 
         Ok(manager)
     }
 
-    /// Locates the path to the managed database
-    /// # Examples
-    /// ```no_run
-    /// # use database::DatabaseManager;
-    /// # use std::error::Error;
-    /// # use std::path::PathBuf;
-    /// #
-    /// # fn main() -> Result<(), Box<dyn Error>> {
-    ///     let mut path = PathBuf::from("./folder/new_folder");
-    ///     let manager = DatabaseManager::new(&path, "database")?;
-    /// 
-    ///     path.push("database");
-    ///     assert_eq!(manager.locate(), path);
-    /// #
-    ///     # Ok(())
-    /// # }
-    /// ```
-    pub fn locate(&self) -> PathBuf {
-        *self.path.clone()
+    /// Creates a new file or folder
+    pub fn write_new(&mut self, id: impl Into<ItemId>, parent: impl Into<ItemId>) -> Result<(), Box<dyn Error>> {
+        let id: ItemId = id.into();
+        let parent = parent.into();
+
+        if self.items.contains_key(&id) {
+            return Err(Errors::ItemAlreadyExists.into());
+        }
+
+        let mut path = self.locate(parent)?;
+
+        path.push(&id.0);
+
+        if path.extension().is_none() {
+            create_dir(&path)?;
+        } else {
+            File::create_new(&path)?;
+        }
+
+        self.items.insert(id, path);
+        Ok(())
     }
 
-    pub fn write(&mut self,) -> Option<Box<dyn Error>> {
+    pub fn overwrite_existing<T>(&self, _id: impl Into<ItemId>, _data: Option<T>) -> Option<Box<dyn Error>> {
         todo!();
+    }
+
+    pub fn read<T>(&self) -> Result<T, Box<dyn Error>> {
+        todo!();
+    }
+
+    /// Returns all `ItemId` as a `Vec<ItemId>`
+    pub fn get_all(&self, sorted: impl Into<bool>) -> Vec<ItemId> {
+        let sorted = sorted.into();
+
+        let mut list: Vec<ItemId> = self.items.keys().map(|key| key.to_owned()).collect();
+
+        if sorted {
+            list.sort();
+        }
+
+        list
+    }
+
+    /// Returns all `ItemId` that belong to a certain parent
+    /// 
+    /// Empty strings are returned if there is an error reading the item
+    pub fn get_by_parent(&self, parent: impl Into<ItemId>, sorted: impl Into<bool>) -> Result<Vec<ItemId>, Box<dyn Error>> {
+        let parent = parent.into();
+
+        let path = self.locate(parent)?;
+
+        if !path.is_dir() {
+            return Err(Errors::NotADirectory.into())
+        }
+
+        let mut list: Vec<ItemId> = path.read_dir()?.map(|directory|{
+            match directory {
+                Ok(path) => {
+                    let path_name_as_string = match path.file_name().into_string() {
+                        Ok(string) => string,
+                        Err(_) => String::new(),
+                    };
+
+                    path_name_as_string.into()
+                },
+                Err(_) => ItemId::database_id(),
+            }
+        }).collect();
+
+        if sorted.into() {
+            list.sort();
+        }
+
+        Ok(list)
     }
 
     /// Deletes a directory or a file
     /// 
     /// Pass `""` or equivalent as `id` to delete database
-    pub fn delete<'a, K, T>(&mut self, id: &'a K, force: T) -> Option<Box<dyn Error>>
-    where
-        T: Into<bool>,
-        K: AsRef<Path>, PathBuf: From<&'a K>, String: Borrow<K>, K: Eq, K: Hash, K: ?Sized, &'a K: PartialEq<&'a str>,
-    {
-        if id == "" {
-            match delete_directory(&self.locate(), force) {
-                Some(error) => return Some(error),
-                None => return None,
+    pub fn delete(&mut self, id: impl Into<ItemId>, force: impl Into<bool>) -> Result<(), Box<dyn Error>> {
+        let id = id.into();
+
+        if id.0.is_empty() {
+            match delete_directory(&self.locate(id)?, force) {
+                Ok(_) => {
+                    self.items.drain();
+                    return Ok(());
+                },
+                Err(error) => return Err(error),
             }
         }
 
-        let path = match self.locate_item(id) {
-            Ok(path) => path,
-            Err(error) => return Some(error),
-        };
+        self.items.remove(&id);
+        
+        let path = self.locate(id)?;
 
         if path.is_dir() {
-            match delete_directory(&path, force) {
-                Some(error) => return Some(error),
-                None => return None,
-            }
+            delete_directory(&path, force)?;
         }
 
-        match remove_file(path) {
-            Ok(_) => return None,
-            Err(error) => return Some(error.into()),
-        }
+        remove_file(path)?;
+
+        Ok(())
     }
 
-    pub fn locate_item<K>(&self, id: &K) -> Result<PathBuf, Box<dyn Error>>
-    where
-        String: Borrow<K>,
-        K: Eq,
-        K: Hash,
-        K: ?Sized,
-    {
-        let location = self.items.get(id);
+    pub fn locate(&self, id: impl Into<ItemId>) -> Result<PathBuf, Box<dyn Error>> {
+        let id = id.into();
+
+        if id.0.is_empty() {
+            return Ok(self.path.clone());
+        }
+
+        let location = self.items.get(&id);
 
         if let Some(path) = location {
             Ok(path.clone())
@@ -329,21 +420,13 @@ fn truncate(mut path: PathBuf, steps: i32) -> Result<PathBuf, Errors> {
 /// 
 /// #### If `force` is false
 /// - `path` is not empty
-fn delete_directory<T>(path: &PathBuf, force: T) -> Option<Box<dyn Error>>
+fn delete_directory<T>(path: &PathBuf, force: T) -> Result<(), Box<dyn Error>>
 where
     T: Into<bool>,
 {
     if force.into() {
-        match remove_dir_all(path) {
-            Ok(_) => (),
-            Err(error) => return Some(error.into()),
-        };
+        return Ok(remove_dir_all(path)?);
     } else {
-        match remove_dir(path) {
-            Ok(_) => (),
-            Err(error) => return Some(error.into()),
-        };
+        return Ok(remove_dir(path)?);
     }
-
-    None
 }
