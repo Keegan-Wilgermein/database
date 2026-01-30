@@ -1,32 +1,32 @@
 //! # Database
 //! `Database` is a file management system designed to make reading and writing to a local database easier
 
-use std::{collections::HashMap, env::{current_dir, current_exe}, error::Error, fmt::Display, fs::{File, create_dir, remove_dir, remove_dir_all, remove_file}, hash::Hash, path::{Path, PathBuf}};
+use std::{collections::HashMap, env::{current_dir, current_exe}, fs::{self, File, create_dir, remove_dir, remove_dir_all, remove_file}, hash::Hash, io::Write, path::{Path, PathBuf}};
+use thiserror::Error;
 
 // -------- Enums --------
 /// Used for generating errors on funtions that don't actually produce any errors
-#[derive(Debug, PartialEq, Clone)]
-enum Errors {
-    PathStepOverflow,
-    NoClosestDir,
-    NoMatchingID,
-    ItemAlreadyExists,
-    NotADirectory,
+#[derive(Debug, Error)]
+pub enum DatabaseError {
+    #[error("Steps '{0}' greater than path length '{1}'")]
+    PathStepOverflow(i32, i32),
+    #[error("Directory '{0}' not found along path to executable")]
+    NoClosestDir(String),
+    #[error("ID '{0}' doesn't point to a known path")]
+    NoMatchingID(String),
+    #[error("ID '{0}' already exists")]
+    IdAlreadyExists(String),
+    #[error("Path '{0}' doesn't point to a directory")]
+    NotADirectory(PathBuf),
+    #[error("Path '{0}' doesn't point to a file")]
+    NotAFile(PathBuf),
+    #[error("Couldn't convert OsString to String")]
+    OsStringConversion,
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    PathBufConversion(#[from] std::path::StripPrefixError),
 }
-
-impl Display for Errors {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Errors::PathStepOverflow => write!(f, "Steps exceed length of path"),
-            Errors::NoClosestDir => write!(f, "Name not found in path"),
-            Errors::NoMatchingID => write!(f, "No item matching ID exists"),
-            Errors::ItemAlreadyExists => write!(f, "Item already exists"),
-            Errors::NotADirectory => write!(f, "Expected directory but found file"),
-        }
-    }
-}
-
-impl Error for Errors {}
 
 #[derive(Debug, PartialEq, Clone, Default)]
 /// A replacement for `bool` simply for readability
@@ -80,6 +80,32 @@ impl From<bool> for ShouldSort {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Default)]
+/// A replacement for `bool` simply for readability
+pub enum Serialize {
+    #[default]
+    Serialize,
+    NoSerialize,
+}
+
+impl Into<bool> for Serialize {
+    fn into(self) -> bool {
+        match self {
+            Serialize::Serialize => true,
+            Serialize::NoSerialize => false,
+        }
+    }
+}
+
+impl From<bool> for Serialize {
+    fn from(value: bool) -> Self {
+        match value {
+            true => Serialize::Serialize,
+            false => Serialize::NoSerialize,
+        }
+    }
+}
+
 // -------- Structs --------
 /// Automatic path generation
 #[derive(PartialEq, Debug, Clone, Default)]
@@ -102,7 +128,7 @@ impl GenPath {
     /// # use std::error::Error;
     /// # use std::path::PathBuf;
     /// #
-    /// # fn main() -> Result<(), Box<dyn Error>> {
+    /// # fn main() -> Result<(), DatabaseError> {
     /// #
     /// let working_dir = PathBuf::from("./folder1/folder2/folder3");
     /// let path = GenPath::from_working_dir(0)?;
@@ -116,7 +142,7 @@ impl GenPath {
     /// #
     /// # }
     /// ```
-    pub fn from_working_dir(steps: i32) -> Result<PathBuf, Box<dyn Error>> {
+    pub fn from_working_dir(steps: i32) -> Result<PathBuf, DatabaseError> {
         let working_dir = truncate(current_dir()?, steps)?;
 
         Ok(working_dir)
@@ -133,7 +159,7 @@ impl GenPath {
     /// # use std::error::Error;
     /// # use std::path::PathBuf;
     /// #
-    /// # fn main() -> Result<(), Box<dyn Error>> {
+    /// # fn main() -> Result<(), DatabaseError> {
     /// #
     /// let current_exe = PathBuf::from("./folder1/folder2/folder3");
     /// let path = GenPath::from_exe(0)?;
@@ -147,7 +173,7 @@ impl GenPath {
     /// #
     /// # }
     /// ```
-    pub fn from_exe(steps: i32) -> Result<PathBuf, Box<dyn Error>> {
+    pub fn from_exe(steps: i32) -> Result<PathBuf, DatabaseError> {
         let exe = truncate(current_exe()?, steps + 1)?;
 
         Ok(exe)
@@ -172,7 +198,7 @@ impl GenPath {
     /// let path = GenPath::from_closest_name("directory").unwrap();
     /// assert_eq!(path, PathBuf::from("./folder/directory"));
     /// ```
-    pub fn from_closest_name(name: impl AsRef<Path>) -> Result<PathBuf, Box<dyn Error>> {
+    pub fn from_closest_name(name: impl AsRef<Path>) -> Result<PathBuf, DatabaseError> {
         let exe = current_exe()?;
 
         for path in exe.ancestors() {
@@ -183,7 +209,12 @@ impl GenPath {
             }
         }
 
-        Err(Errors::NoClosestDir.into())
+        let name_as_string = match name.as_ref().to_owned().into_os_string().into_string() {
+            Ok(string) => string,
+            Err(_) => return Err(DatabaseError::OsStringConversion)
+        };
+
+        Err(DatabaseError::NoClosestDir(name_as_string))
     }
 }
 
@@ -244,7 +275,7 @@ impl DatabaseManager {
     /// # use database::DatabaseManager;
     /// # use std::error::Error;
     /// #
-    /// # fn main() -> Result<(), Box<dyn Error>> {
+    /// # fn main() -> Result<(), DatabaseError> {
     /// let path = "./folder/other_folder";
     /// // Creates a folder at "./folder/other_folder/database"
     /// let manager = DatabaseManager::new(&path, "database")?;
@@ -252,7 +283,7 @@ impl DatabaseManager {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn new(path: impl AsRef<Path>, name: impl AsRef<Path>) -> Result<Self, Box<dyn Error>> {
+    pub fn new(path: impl AsRef<Path>, name: impl AsRef<Path>) -> Result<Self, DatabaseError> {
         let mut path: PathBuf = path.as_ref().to_path_buf();
 
         path.push(name);
@@ -268,12 +299,12 @@ impl DatabaseManager {
     }
 
     /// Creates a new file or folder
-    pub fn write_new(&mut self, id: impl Into<ItemId>, parent: impl Into<ItemId>) -> Result<(), Box<dyn Error>> {
+    pub fn write_new(&mut self, id: impl Into<ItemId>, parent: impl Into<ItemId>) -> Result<(), DatabaseError> {
         let id: ItemId = id.into();
         let parent = parent.into();
 
         if self.items.contains_key(&id) {
-            return Err(Errors::ItemAlreadyExists.into());
+            return Err(DatabaseError::IdAlreadyExists(id.as_string()));
         }
 
         let mut path = self.locate(parent)?;
@@ -290,13 +321,42 @@ impl DatabaseManager {
         Ok(())
     }
 
-    pub fn overwrite_existing<T>(&self, _id: impl Into<ItemId>, _data: Option<T>) -> Option<Box<dyn Error>> {
-        todo!();
+    /// Overwrite an existing file with new data
+    pub fn overwrite_existing<T>(&self, id: impl Into<ItemId>, data: T) -> Result<(), DatabaseError>
+    where
+        T: AsRef<[u8]>,
+    {
+        let id = id.into();
+
+        let path = self.locate(id)?;
+
+        if path.is_dir() {
+            return Err(DatabaseError::NotAFile(path));
+        }
+
+        let buffer = path.with_extension("tmp");
+
+        let mut file = File::create(&buffer)?;
+        file.write_all(data.as_ref())?;
+        file.sync_all()?;
+        fs::rename(&buffer, &path)?;
+
+        Ok(())
     }
 
-    pub fn read<T>(&self) -> Result<T, Box<dyn Error>> {
-        todo!();
-    }
+    // pub fn read<T>(&self, id: impl Into<ItemId>) -> Result<T, DatabaseError> {
+    //     let id = id.into();
+
+    //     let path = self.locate(id)?;
+
+    //     if path.is_dir() {
+    //         return Err(DatabaseError::NotAFile(path));
+    //     }
+
+    //     let data = fs::read_to_string(path)?;
+
+    //     Ok(deserialized_data)
+    // }
 
     /// Returns all `ItemId` as a `Vec<ItemId>`
     pub fn get_all(&self, sorted: impl Into<bool>) -> Vec<ItemId> {
@@ -314,13 +374,13 @@ impl DatabaseManager {
     /// Returns all `ItemId` that belong to a certain parent
     /// 
     /// Empty strings are returned if there is an error reading the item
-    pub fn get_by_parent(&self, parent: impl Into<ItemId>, sorted: impl Into<bool>) -> Result<Vec<ItemId>, Box<dyn Error>> {
+    pub fn get_by_parent(&self, parent: impl Into<ItemId>, sorted: impl Into<bool>) -> Result<Vec<ItemId>, DatabaseError> {
         let parent = parent.into();
 
         let path = self.locate(parent)?;
 
         if !path.is_dir() {
-            return Err(Errors::NotADirectory.into())
+            return Err(DatabaseError::NotADirectory(path))
         }
 
         let mut list: Vec<ItemId> = path.read_dir()?.map(|directory|{
@@ -347,12 +407,13 @@ impl DatabaseManager {
     /// Deletes a directory or a file
     /// 
     /// Pass `""` or equivalent as `id` to delete database
-    pub fn delete(&mut self, id: impl Into<ItemId>, force: impl Into<bool>) -> Result<(), Box<dyn Error>> {
+    pub fn delete(&mut self, id: impl Into<ItemId>, force: impl Into<bool>) -> Result<(), DatabaseError> {
         let id = id.into();
 
         if id.0.is_empty() {
             match delete_directory(&self.locate(id)?, force) {
                 Ok(_) => {
+                    self.path = PathBuf::new();
                     self.items.drain();
                     return Ok(());
                 },
@@ -373,7 +434,7 @@ impl DatabaseManager {
         Ok(())
     }
 
-    pub fn locate(&self, id: impl Into<ItemId>) -> Result<PathBuf, Box<dyn Error>> {
+    pub fn locate(&self, id: impl Into<ItemId>) -> Result<PathBuf, DatabaseError> {
         let id = id.into();
 
         if id.0.is_empty() {
@@ -385,18 +446,18 @@ impl DatabaseManager {
         if let Some(path) = location {
             Ok(path.clone())
         } else {
-            Err(Errors::NoMatchingID.into())
+            Err(DatabaseError::NoMatchingID(id.as_string()))
         }
     }
 }
 
 // -------- Functions --------
 /// Truncates the end of a path the specified amount of times
-fn truncate(mut path: PathBuf, steps: i32) -> Result<PathBuf, Errors> {
-    let parents = path.ancestors().count() - 1;
+fn truncate(mut path: PathBuf, steps: i32) -> Result<PathBuf, DatabaseError> {
+    let parents = (path.ancestors().count() - 1) as i32;
 
-    if parents as i32 <= steps {
-        return Err(Errors::PathStepOverflow)
+    if parents <= steps {
+        return Err(DatabaseError::PathStepOverflow(steps, parents))
     }
 
     for _ in 0..steps {
@@ -420,7 +481,7 @@ fn truncate(mut path: PathBuf, steps: i32) -> Result<PathBuf, Errors> {
 /// 
 /// #### If `force` is false
 /// - `path` is not empty
-fn delete_directory<T>(path: &PathBuf, force: T) -> Result<(), Box<dyn Error>>
+fn delete_directory<T>(path: &PathBuf, force: T) -> Result<(), DatabaseError>
 where
     T: Into<bool>,
 {
