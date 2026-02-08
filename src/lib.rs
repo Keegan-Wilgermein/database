@@ -3,6 +3,7 @@
 
 use std::{collections::HashMap, env::{current_dir, current_exe}, fs::{self, File, create_dir, remove_dir, remove_dir_all, remove_file}, hash::Hash, io::Write, path::{Path, PathBuf}};
 use thiserror::Error;
+use fs_more::{self, directory::{BrokenSymlinkBehaviour, CollidingSubDirectoryBehaviour, DestinationDirectoryRule, DirectoryMoveAllowedStrategies, DirectoryMoveByCopyOptions, DirectoryMoveOptions, SymlinkBehaviour, move_directory}, error::MoveDirectoryError, file::CollidingFileBehaviour};
 
 // -------- Enums --------
 /// Used for generating errors on funtions that don't actually produce any errors
@@ -26,6 +27,8 @@ pub enum DatabaseError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     PathBufConversion(#[from] std::path::StripPrefixError),
+    #[error(transparent)]
+    MigrationError(#[from] MoveDirectoryError)
 }
 
 #[derive(Debug, PartialEq, Clone, Default)]
@@ -189,7 +192,7 @@ impl GenPath {
     /// This function will return an error when:
     /// - `name` not found in path to current exe
     /// 
-    /// This function will not return if a file matching `name` is found and will continue searchng until a directory is found or it returns the above error
+    /// This function will not return if a file matching `name` is found and will continue searchng until a directory is found or it finds nothing
     /// # Examples
     /// ```no_run
     /// # use database::*;
@@ -198,7 +201,7 @@ impl GenPath {
     /// let path = GenPath::from_closest_name("directory").unwrap();
     /// assert_eq!(path, PathBuf::from("./folder/directory"));
     /// ```
-    pub fn from_closest_name(name: impl AsRef<Path>) -> Result<PathBuf, DatabaseError> {
+    pub fn from_closest_match(name: impl AsRef<Path>) -> Result<PathBuf, DatabaseError> {
         let exe = current_exe()?;
 
         for path in exe.ancestors() {
@@ -233,6 +236,8 @@ where
 
 impl ItemId {
     /// Returns the ID used for the actual database
+    /// 
+    /// This is equivalant to an empty string
     pub fn database_id() -> Self {
         Self(String::new())
     }
@@ -300,24 +305,36 @@ impl DatabaseManager {
 
     /// Creates a new file or folder
     pub fn write_new(&mut self, id: impl Into<ItemId>, parent: impl Into<ItemId>) -> Result<(), DatabaseError> {
-        let id: ItemId = id.into();
+        let id = id.into();
         let parent = parent.into();
 
         if self.items.contains_key(&id) {
             return Err(DatabaseError::IdAlreadyExists(id.as_string()));
         }
 
-        let mut path = self.locate(parent)?;
+        let absolute_parent_path = self.locate_absolute(parent.clone())?;
+        let relative_parent_path = self.locate_relative(parent)?;
+        let mut absolute_path: PathBuf;
+        let mut relative_path: PathBuf;
 
-        path.push(&id.0);
-
-        if path.extension().is_none() {
-            create_dir(&path)?;
+        // If parent isn't root
+        if absolute_parent_path != self.locate_absolute(ItemId::database_id())? {
+            relative_path = relative_parent_path;
+            relative_path.push(&id.0);
         } else {
-            File::create_new(&path)?;
+            relative_path = PathBuf::from(&id.0);
         }
 
-        self.items.insert(id, path);
+        absolute_path = absolute_parent_path;
+        absolute_path.push(&id.0);
+
+        if relative_path.extension().is_none() {
+            create_dir(&absolute_path)?;
+        } else {
+            File::create_new(&absolute_path)?;
+        }
+
+        self.items.insert(id, relative_path);
         Ok(())
     }
 
@@ -328,7 +345,7 @@ impl DatabaseManager {
     {
         let id = id.into();
 
-        let path = self.locate(id)?;
+        let path = self.locate_absolute(id)?;
 
         if path.is_dir() {
             return Err(DatabaseError::NotAFile(path));
@@ -358,7 +375,7 @@ impl DatabaseManager {
     //     Ok(deserialized_data)
     // }
 
-    /// Returns all `ItemId` as a `Vec<ItemId>`
+    /// Returns all existing `ItemId` as a `Vec<ItemId>`
     pub fn get_all(&self, sorted: impl Into<bool>) -> Vec<ItemId> {
         let sorted = sorted.into();
 
@@ -377,7 +394,7 @@ impl DatabaseManager {
     pub fn get_by_parent(&self, parent: impl Into<ItemId>, sorted: impl Into<bool>) -> Result<Vec<ItemId>, DatabaseError> {
         let parent = parent.into();
 
-        let path = self.locate(parent)?;
+        let path = self.locate_absolute(parent)?;
 
         if !path.is_dir() {
             return Err(DatabaseError::NotADirectory(path))
@@ -411,7 +428,7 @@ impl DatabaseManager {
         let id = id.into();
 
         if id.0.is_empty() {
-            match delete_directory(&self.locate(id)?, force) {
+            match delete_directory(&self.locate_absolute(id)?, force) {
                 Ok(_) => {
                     self.path = PathBuf::new();
                     self.items.drain();
@@ -421,12 +438,13 @@ impl DatabaseManager {
             }
         }
 
+        let path = self.locate_absolute(id.clone())?;
+
         self.items.remove(&id);
-        
-        let path = self.locate(id)?;
 
         if path.is_dir() {
             delete_directory(&path, force)?;
+            return Ok(());
         }
 
         remove_file(path)?;
@@ -434,21 +452,68 @@ impl DatabaseManager {
         Ok(())
     }
 
-    pub fn locate(&self, id: impl Into<ItemId>) -> Result<PathBuf, DatabaseError> {
+    /// Locate the database by id and return an absolute path
+    pub fn locate_absolute(&self, id: impl Into<ItemId>) -> Result<PathBuf, DatabaseError> {
         let id = id.into();
 
+        let database_path = self.path.clone();
+
         if id.0.is_empty() {
-            return Ok(self.path.clone());
+            return Ok(database_path);
         }
 
         let location = self.items.get(&id);
 
         if let Some(path) = location {
-            Ok(path.clone())
+            let mut absolute_path = database_path;
+            absolute_path.push(path);
+            Ok(absolute_path)
         } else {
             Err(DatabaseError::NoMatchingID(id.as_string()))
         }
     }
+
+    /// Locate the database by id and return a relative path
+    /// 
+    /// An absolute path will be output if `id` matches the database ID
+    pub fn locate_relative(&self, id: impl Into<ItemId>) -> Result<PathBuf, DatabaseError> {
+        let id = id.into();
+
+        let database_path = self.path.clone();
+
+        if id.0.is_empty() {
+            return Ok(database_path);
+        }
+
+        let location = self.items.get(&id);
+
+        if let Some(path) = location {
+            Ok(path.to_path_buf())
+        } else {
+            Err(DatabaseError::NoMatchingID(id.as_string()))
+        }
+    }
+
+    /// Migrate the database to a different directory overwriting any collisions
+    pub fn migrate(&mut self, to: impl AsRef<Path>) -> Result<(), DatabaseError> {
+        let destination = to.as_ref().to_path_buf();
+
+        let move_options = DirectoryMoveOptions {
+            destination_directory_rule: DestinationDirectoryRule::AllowNonEmpty { colliding_file_behaviour: CollidingFileBehaviour::Overwrite, colliding_subdirectory_behaviour: CollidingSubDirectoryBehaviour::Continue },
+            allowed_strategies: DirectoryMoveAllowedStrategies::OnlyCopyAndDelete { options: DirectoryMoveByCopyOptions { symlink_behaviour: SymlinkBehaviour::Keep, broken_symlink_behaviour: BrokenSymlinkBehaviour::Keep } }
+        };
+
+        move_directory(&self.path, &destination, move_options)?;
+        
+        self.path = destination;
+
+        Ok(())
+    }
+}
+
+/// Returns the size of a file or directory
+pub fn get_size_by_id() {
+
 }
 
 // -------- Functions --------
