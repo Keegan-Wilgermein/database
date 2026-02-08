@@ -3,6 +3,7 @@
 
 use std::{collections::HashMap, env::{current_dir, current_exe}, fs::{self, File, create_dir, remove_dir, remove_dir_all, remove_file}, hash::Hash, io::Write, path::{Path, PathBuf}};
 use thiserror::Error;
+use fs_more::{self, directory::{BrokenSymlinkBehaviour, CollidingSubDirectoryBehaviour, DestinationDirectoryRule, DirectoryMoveAllowedStrategies, DirectoryMoveByCopyOptions, DirectoryMoveOptions, SymlinkBehaviour, move_directory}, error::MoveDirectoryError, file::CollidingFileBehaviour};
 
 // -------- Enums --------
 /// Used for generating errors on funtions that don't actually produce any errors
@@ -26,6 +27,8 @@ pub enum DatabaseError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     PathBufConversion(#[from] std::path::StripPrefixError),
+    #[error(transparent)]
+    MigrationError(#[from] MoveDirectoryError)
 }
 
 #[derive(Debug, PartialEq, Clone, Default)]
@@ -189,7 +192,7 @@ impl GenPath {
     /// This function will return an error when:
     /// - `name` not found in path to current exe
     /// 
-    /// This function will not return if a file matching `name` is found and will continue searchng until a directory is found or it returns the above error
+    /// This function will not return if a file matching `name` is found and will continue searchng until a directory is found or it finds nothing
     /// # Examples
     /// ```no_run
     /// # use database::*;
@@ -198,7 +201,7 @@ impl GenPath {
     /// let path = GenPath::from_closest_name("directory").unwrap();
     /// assert_eq!(path, PathBuf::from("./folder/directory"));
     /// ```
-    pub fn from_closest_name(name: impl AsRef<Path>) -> Result<PathBuf, DatabaseError> {
+    pub fn from_closest_match(name: impl AsRef<Path>) -> Result<PathBuf, DatabaseError> {
         let exe = current_exe()?;
 
         for path in exe.ancestors() {
@@ -491,10 +494,26 @@ impl DatabaseManager {
         }
     }
 
-    /// Migrate the database to a different directory
-    pub fn migrate(&mut self, _path: impl AsRef<Path>) -> Result<(), DatabaseError> {
-        todo!();
+    /// Migrate the database to a different directory overwriting any collisions
+    pub fn migrate(&mut self, to: impl AsRef<Path>) -> Result<(), DatabaseError> {
+        let destination = to.as_ref().to_path_buf();
+
+        let move_options = DirectoryMoveOptions {
+            destination_directory_rule: DestinationDirectoryRule::AllowNonEmpty { colliding_file_behaviour: CollidingFileBehaviour::Overwrite, colliding_subdirectory_behaviour: CollidingSubDirectoryBehaviour::Continue },
+            allowed_strategies: DirectoryMoveAllowedStrategies::OnlyCopyAndDelete { options: DirectoryMoveByCopyOptions { symlink_behaviour: SymlinkBehaviour::Keep, broken_symlink_behaviour: BrokenSymlinkBehaviour::Keep } }
+        };
+
+        move_directory(&self.path, &destination, move_options)?;
+        
+        self.path = destination;
+
+        Ok(())
     }
+}
+
+/// Returns the size of a file or directory
+pub fn get_size_by_id() {
+
 }
 
 // -------- Functions --------
