@@ -128,6 +128,19 @@ pub enum FileSizeUnit {
     Petabyte,
 }
 
+impl FileSizeUnit {
+    fn variant_integer_id(&self) -> u8 {
+        match self {
+            Self::Byte => 0,
+            Self::Kilobyte => 1,
+            Self::Megabyte => 2,
+            Self::Gigabyte => 3,
+            Self::Terabyte => 4,
+            Self::Petabyte => 5,
+        }
+    }
+}
+
 // -------- Structs --------
 /// Automatic path generation
 #[derive(PartialEq, Debug, Clone, Default)]
@@ -310,7 +323,19 @@ impl FileSize {
 
     /// Recalculate size in a different unit
     pub fn as_unit(&self, unit: FileSizeUnit) -> Self {
-        todo!();
+        let difference = self.unit.variant_integer_id() as i8 - unit.variant_integer_id() as i8;
+
+        let mut size = self.size;
+
+        if difference > 0 {
+            let factor = THOUSAND.pow(difference as u32);
+            size = size.saturating_mul(factor);
+        } else if difference < 0 {
+            let factor = THOUSAND.pow((-difference) as u32);
+            size /= factor;
+        }
+
+        Self { size, unit }
     }
 
     /// Creates `FileSize` from input
@@ -340,6 +365,32 @@ pub struct FileInformation {
     created: Option<u64>,
     last_opened: Option<u64>,
     last_modified: Option<u64>,
+}
+
+impl FileInformation {
+    pub fn get_name(&self) -> Option<String> {
+        self.name.clone()
+    }
+
+    pub fn get_extension(&self) -> Option<String> {
+        self.extension.clone()
+    }
+
+    pub fn get_size(&self) -> FileSize {
+        self.size.clone()
+    }
+
+    pub fn get_created(&self) -> Option<u64> {
+        self.created.clone()
+    }
+
+    pub fn get_opened(&self) -> Option<u64> {
+        self.last_opened.clone()
+    }
+
+    pub fn get_modified(&self) -> Option<u64> {
+        self.last_modified.clone()
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -616,16 +667,17 @@ impl DatabaseManager {
 
         let metadata = fs::metadata(&path)?;
 
-        // name: String,
-        // extension: String,
-        // size: FileSize,
-        // created: i32,
-        // last_opened: i32,
-        // last_modified: i32,
+        let name = {
+            let os = if path.is_dir() {
+                path.file_name()
+            } else {
+                path.file_stem()
+            };
 
-        let name = match os_str_to_string(path.file_name()) {
-            Ok(name) => Some(name),
-            Err(_) => None,
+            match os_str_to_string(os) {
+                Ok(name) => Some(name),
+                Err(_) => None,
+            }
         };
 
         let extension = {
