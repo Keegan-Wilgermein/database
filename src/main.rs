@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     database.write_new("test_file.txt", ItemId::id("test_folder"))?;
     
     // database.overwrite_existing("test.json", file);
-
+    
     database.delete(ItemId::database_id(), ForceDeletion::Force)?;
 
     Ok(())

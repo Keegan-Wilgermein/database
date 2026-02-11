@@ -1,9 +1,17 @@
 //! # Database
 //! `Database` is a file management system designed to make reading and writing to a local database easier
 
-use std::{collections::HashMap, env::{current_dir, current_exe}, fs::{self, File, create_dir, remove_dir, remove_dir_all, remove_file}, hash::Hash, io::Write, path::{Path, PathBuf}};
+use std::{collections::HashMap, env::{current_dir, current_exe}, ffi::OsStr, fs::{self, File, create_dir, remove_dir, remove_dir_all, remove_file}, hash::Hash, io::{self, Write}, path::{Path, PathBuf}, time::SystemTime};
 use thiserror::Error;
 use fs_more::{self, directory::{BrokenSymlinkBehaviour, CollidingSubDirectoryBehaviour, DestinationDirectoryRule, DirectoryMoveAllowedStrategies, DirectoryMoveByCopyOptions, DirectoryMoveOptions, SymlinkBehaviour, move_directory}, error::MoveDirectoryError, file::CollidingFileBehaviour};
+
+// Constants
+const ZERO: u64 = 0;
+const THOUSAND: u64 = 1_000;
+const MILLION: u64 = 1_000_000;
+const BILLION: u64 = 1_000_000_000;
+const TRILLION: u64 = 1_000_000_000_000;
+const QUADRILLION: u64 = 1_000_000_000_000_000;
 
 // -------- Enums --------
 /// Used for generating errors on funtions that don't actually produce any errors
@@ -105,6 +113,30 @@ impl From<bool> for Serialize {
         match value {
             true => Serialize::Serialize,
             false => Serialize::NoSerialize,
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
+pub enum FileSizeUnit {
+    #[default]
+    Byte,
+    Kilobyte,
+    Megabyte,
+    Gigabyte,
+    Terabyte,
+    Petabyte,
+}
+
+impl FileSizeUnit {
+    fn variant_integer_id(&self) -> u8 {
+        match self {
+            Self::Byte => 0,
+            Self::Kilobyte => 1,
+            Self::Megabyte => 2,
+            Self::Gigabyte => 3,
+            Self::Terabyte => 4,
+            Self::Petabyte => 5,
         }
     }
 }
@@ -249,6 +281,115 @@ impl ItemId {
 
     pub fn as_string(self) -> String {
         self.0
+    }
+}
+
+#[derive(Debug, Default, PartialEq, PartialOrd, Clone, Copy)]
+pub struct FileSize {
+    size: u64,
+    unit: FileSizeUnit,
+}
+
+impl FileSize {
+    pub fn get_size(&self) -> u64 {
+        self.size
+    }
+
+    pub fn get_unit(&self) -> FileSizeUnit {
+        self.unit
+    }
+
+    /// Returns the name of the stored `FileSizeUnit` as a `String`, appending an 's' if the `size` is greater than 1
+    pub fn unit_as_string(&self) -> String {
+        let name = match self.unit {
+            FileSizeUnit::Byte => "Byte",
+            FileSizeUnit::Kilobyte => "Kilobyte",
+            FileSizeUnit::Megabyte => "Megabyte",
+            FileSizeUnit::Gigabyte => "Gigabyte",
+            FileSizeUnit::Terabyte => "Terabyte",
+            FileSizeUnit::Petabyte => "Petabyte",
+        };
+
+        let mut name_string = String::from(name);
+
+        // Push an s to the end of the string if not 1
+        match self.size {
+            1 => (),
+            _ => name_string.push('s'),
+        }
+
+        name_string
+    }
+
+    /// Recalculate size in a different unit
+    pub fn as_unit(&self, unit: FileSizeUnit) -> Self {
+        let difference = self.unit.variant_integer_id() as i8 - unit.variant_integer_id() as i8;
+
+        let mut size = self.size;
+
+        if difference > 0 {
+            let factor = THOUSAND.pow(difference as u32);
+            size = size.saturating_mul(factor);
+        } else if difference < 0 {
+            let factor = THOUSAND.pow((-difference) as u32);
+            size /= factor;
+        }
+
+        Self { size, unit }
+    }
+
+    /// Creates `FileSize` from input
+    fn from(bytes: u64) -> Self {
+        let (size, unit) = match bytes {
+            ZERO..THOUSAND => (bytes, FileSizeUnit::Byte),
+            THOUSAND..MILLION => (bytes / THOUSAND, FileSizeUnit::Kilobyte),
+            MILLION..BILLION => (bytes / MILLION, FileSizeUnit::Megabyte),
+            BILLION..TRILLION => (bytes / BILLION, FileSizeUnit::Gigabyte),
+            TRILLION..QUADRILLION => (bytes / TRILLION, FileSizeUnit::Terabyte),
+            _ => (bytes / QUADRILLION, FileSizeUnit::Petabyte),
+        };
+
+        Self {
+            size,
+            unit,
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq, PartialOrd, Clone)]
+/// Represents important file information
+pub struct FileInformation {
+    name: Option<String>,
+    extension: Option<String>,
+    size: FileSize,
+    created: Option<u64>,
+    last_opened: Option<u64>,
+    last_modified: Option<u64>,
+}
+
+impl FileInformation {
+    pub fn get_name(&self) -> Option<String> {
+        self.name.clone()
+    }
+
+    pub fn get_extension(&self) -> Option<String> {
+        self.extension.clone()
+    }
+
+    pub fn get_size(&self) -> FileSize {
+        self.size.clone()
+    }
+
+    pub fn get_created(&self) -> Option<u64> {
+        self.created.clone()
+    }
+
+    pub fn get_opened(&self) -> Option<u64> {
+        self.last_opened.clone()
+    }
+
+    pub fn get_modified(&self) -> Option<u64> {
+        self.last_modified.clone()
     }
 }
 
@@ -499,8 +640,16 @@ impl DatabaseManager {
         let destination = to.as_ref().to_path_buf();
 
         let move_options = DirectoryMoveOptions {
-            destination_directory_rule: DestinationDirectoryRule::AllowNonEmpty { colliding_file_behaviour: CollidingFileBehaviour::Overwrite, colliding_subdirectory_behaviour: CollidingSubDirectoryBehaviour::Continue },
-            allowed_strategies: DirectoryMoveAllowedStrategies::OnlyCopyAndDelete { options: DirectoryMoveByCopyOptions { symlink_behaviour: SymlinkBehaviour::Keep, broken_symlink_behaviour: BrokenSymlinkBehaviour::Keep } }
+            destination_directory_rule: DestinationDirectoryRule::AllowNonEmpty {
+                colliding_file_behaviour: CollidingFileBehaviour::Overwrite,
+                colliding_subdirectory_behaviour: CollidingSubDirectoryBehaviour::Continue
+            },
+            allowed_strategies: DirectoryMoveAllowedStrategies::OnlyCopyAndDelete {
+                options: DirectoryMoveByCopyOptions {
+                    symlink_behaviour: SymlinkBehaviour::Keep,
+                    broken_symlink_behaviour: BrokenSymlinkBehaviour::Keep
+                }
+            }
         };
 
         move_directory(&self.path, &destination, move_options)?;
@@ -509,11 +658,56 @@ impl DatabaseManager {
 
         Ok(())
     }
-}
 
-/// Returns the size of a file or directory
-pub fn get_size_by_id() {
+    /// Returns the information about a folder or file
+    pub fn get_file_information(&self, id: impl Into<ItemId>) -> Result<FileInformation, DatabaseError> {
+        let id = id.into();
+    
+        let path = self.locate_absolute(id)?;
 
+        let metadata = fs::metadata(&path)?;
+
+        let name = {
+            let os = if path.is_dir() {
+                path.file_name()
+            } else {
+                path.file_stem()
+            };
+
+            match os_str_to_string(os) {
+                Ok(name) => Some(name),
+                Err(_) => None,
+            }
+        };
+
+        let extension = {
+            if path.is_dir() {
+                None
+            } else {
+                match os_str_to_string(path.extension()) {
+                    Ok(extension) => Some(extension),
+                    Err(_) => None,
+                }
+            }
+        };
+
+        let size = FileSize::from(metadata.len());
+
+        let created = sys_time_to_unsigned_int(metadata.created());
+
+        let last_opened = sys_time_to_unsigned_int(metadata.accessed());
+
+        let last_modified = sys_time_to_unsigned_int(metadata.modified());
+    
+        Ok(FileInformation {
+            name,
+            extension,
+            size,
+            created,
+            last_opened,
+            last_modified,
+        })
+    }
 }
 
 // -------- Functions --------
@@ -530,6 +724,30 @@ fn truncate(mut path: PathBuf, steps: i32) -> Result<PathBuf, DatabaseError> {
     }
 
     Ok(path)
+}
+
+fn os_str_to_string(os_str: Option<&OsStr>) -> Result<String, DatabaseError> {
+    let os_str = match os_str {
+        Some(os_str) => os_str,
+        None => return Err(DatabaseError::OsStringConversion),
+    };
+
+    match os_str.to_os_string().into_string() {
+        Ok(string) => Ok(string),
+        Err(_) => Err(DatabaseError::OsStringConversion),
+    }
+}
+
+fn sys_time_to_unsigned_int(time: io::Result<SystemTime>) -> Option<u64> {
+    match time {
+        Ok(time) => {
+            match time.elapsed() {
+                Ok(duration) => Some(duration.as_secs()),
+                Err(_) => None,
+            }
+        },
+        Err(_) => None,
+    }
 }
 
 /// Deletes the passed directory
