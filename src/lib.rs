@@ -14,7 +14,7 @@ const TRILLION: u64 = 1_000_000_000_000;
 const QUADRILLION: u64 = 1_000_000_000_000_000;
 
 // -------- Enums --------
-/// Used for generating errors on funtions that don't actually produce any errors
+/// Error messages
 #[derive(Debug, Error)]
 pub enum DatabaseError {
     #[error("Steps '{0}' greater than path length '{1}'")]
@@ -281,6 +281,16 @@ impl ItemId {
 
     pub fn as_string(self) -> String {
         self.0
+    }
+
+    pub fn get_parent(&self) -> Result<Self, DatabaseError> {
+        let path = PathBuf::from(self.0.clone());
+
+        if let Some(name) = path.parent() {
+            return Ok(Self::id(os_str_to_string(name.file_name())?));
+        }
+
+        Ok(Self::database_id())
     }
 }
 
@@ -560,6 +570,19 @@ impl DatabaseManager {
         }
 
         Ok(list)
+    }
+
+    pub fn rename(&mut self, id: impl Into<ItemId>, to: impl AsRef<str>) -> Result<(), DatabaseError> {
+        let id = id.into();
+        let name = to.as_ref().to_owned();
+
+        self.items.remove_entry(&id);
+
+        self.write_new(id.clone(), id.get_parent()?)?;
+
+        fs::rename(id.0, name)?;
+
+        Ok(())
     }
 
     /// Deletes a directory or a file
