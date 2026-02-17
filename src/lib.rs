@@ -14,7 +14,7 @@ const TRILLION: u64 = 1_000_000_000_000;
 const QUADRILLION: u64 = 1_000_000_000_000_000;
 
 // -------- Enums --------
-/// Used for generating errors on funtions that don't actually produce any errors
+/// Error messages
 #[derive(Debug, Error)]
 pub enum DatabaseError {
     #[error("Steps '{0}' greater than path length '{1}'")]
@@ -31,6 +31,8 @@ pub enum DatabaseError {
     NotAFile(PathBuf),
     #[error("Couldn't convert OsString to String")]
     OsStringConversion,
+    #[error("ID '{0}' doesn't have a parent")]
+    NoParent(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -560,6 +562,50 @@ impl DatabaseManager {
         }
 
         Ok(list)
+    }
+
+    pub fn get_parent(&self, id: impl Into<ItemId>) -> Result<ItemId, DatabaseError> {
+        let id = id.into();
+        let path = self.locate_absolute(id.clone())?;
+
+        let parent = match path.parent() {
+            Some(parent) => {
+                let string = os_str_to_string(parent.file_name())?;
+                ItemId::id(string)
+            },
+            None => return Err(DatabaseError::NoParent(id.0)),
+        };
+
+        Ok(parent)
+    }
+
+    pub fn rename(&mut self, id: impl Into<ItemId>, to: impl AsRef<str>) -> Result<(), DatabaseError> {
+        let id = id.into();
+        let name = to.as_ref().to_owned();
+
+        let path = self.locate_absolute(id.clone())?;
+        let mut relative_path = self.locate_relative(id.clone())?;
+        
+        match self.items.remove_entry(&id) {
+            Some(_) => (),
+            None => return Err(DatabaseError::NoMatchingID(id.0)),
+        }
+        
+        relative_path = match relative_path.pop() {
+            true => {
+                relative_path.push(&name);
+                PathBuf::from(relative_path)
+            },
+            false => {
+                PathBuf::from(&name)
+            }
+        };
+        
+        self.items.insert(ItemId::id(name.clone()), relative_path);
+
+        fs::rename(&path, self.locate_absolute(name)?)?;
+
+        Ok(())
     }
 
     /// Deletes a directory or a file

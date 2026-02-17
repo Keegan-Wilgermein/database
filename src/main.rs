@@ -16,10 +16,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     database.write_new("test_folder", ItemId::database_id())?;
     database.write_new("test_file.txt", ItemId::id("test_folder"))?;
+
+    println!("All one: {:?}", database.get_all(ShouldSort::Sort));
+
+    database.rename("test_folder", "rename_test")?;
+
+    println!("All two: {:?}", database.get_all(ShouldSort::Sort));
     
     // database.overwrite_existing("test.json", file);
     
-    database.delete(ItemId::database_id(), ForceDeletion::Force)?;
+    // database.delete(ItemId::database_id(), ForceDeletion::Force)?;
 
     Ok(())
 }
