@@ -268,6 +268,12 @@ where
     }
 }
 
+impl From<&ItemId> for ItemId {
+    fn from(id: &ItemId) -> Self {
+        id.clone()
+    }
+}
+
 impl ItemId {
     /// Returns the ID used for the actual database
     /// 
@@ -281,8 +287,12 @@ impl ItemId {
         Self(id.into())
     }
 
-    pub fn as_string(self) -> String {
-        self.0
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn as_string(&self) -> String {
+        self.0.clone()
     }
 }
 
