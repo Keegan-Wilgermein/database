@@ -31,6 +31,8 @@ pub enum DatabaseError {
     NotAFile(PathBuf),
     #[error("Couldn't convert OsString to String")]
     OsStringConversion,
+    #[error("ID '{0}' doesn't have a parent")]
+    NoParent(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -281,16 +283,6 @@ impl ItemId {
 
     pub fn as_string(self) -> String {
         self.0
-    }
-
-    pub fn get_parent(&self) -> Result<Self, DatabaseError> {
-        let path = PathBuf::from(self.0.clone());
-
-        if let Some(name) = path.parent() {
-            return Ok(Self::id(os_str_to_string(name.file_name())?));
-        }
-
-        Ok(Self::database_id())
     }
 }
 
@@ -572,15 +564,46 @@ impl DatabaseManager {
         Ok(list)
     }
 
+    pub fn get_parent(&self, id: impl Into<ItemId>) -> Result<ItemId, DatabaseError> {
+        let id = id.into();
+        let path = self.locate_absolute(id.clone())?;
+
+        let parent = match path.parent() {
+            Some(parent) => {
+                let string = os_str_to_string(parent.file_name())?;
+                ItemId::id(string)
+            },
+            None => return Err(DatabaseError::NoParent(id.0)),
+        };
+
+        Ok(parent)
+    }
+
     pub fn rename(&mut self, id: impl Into<ItemId>, to: impl AsRef<str>) -> Result<(), DatabaseError> {
         let id = id.into();
         let name = to.as_ref().to_owned();
 
-        self.items.remove_entry(&id);
+        let path = self.locate_absolute(id.clone())?;
+        let mut relative_path = self.locate_relative(id.clone())?;
+        
+        match self.items.remove_entry(&id) {
+            Some(_) => (),
+            None => return Err(DatabaseError::NoMatchingID(id.0)),
+        }
+        
+        relative_path = match relative_path.pop() {
+            true => {
+                relative_path.push(&name);
+                PathBuf::from(relative_path)
+            },
+            false => {
+                PathBuf::from(&name)
+            }
+        };
+        
+        self.items.insert(ItemId::id(name.clone()), relative_path);
 
-        self.write_new(id.clone(), id.get_parent()?)?;
-
-        fs::rename(id.0, name)?;
+        fs::rename(&path, self.locate_absolute(name)?)?;
 
         Ok(())
     }
