@@ -49,6 +49,10 @@ pub enum DatabaseError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
+    SerdeJson(#[from] serde_json::Error),
+    #[error(transparent)]
+    Bincode(#[from] bincode::Error),
+    #[error(transparent)]
     PathBufConversion(#[from] std::path::StripPrefixError),
 }
 
@@ -258,7 +262,7 @@ impl GenPath {
     /// # use database::*;
     /// # use std::path::PathBuf;
     /// // Exe location is ./folder/directory/other/exe
-    /// let path = GenPath::from_closest_name("directory").unwrap();
+    /// let path = GenPath::from_closest_match("directory").unwrap();
     /// assert_eq!(path, PathBuf::from("./folder/directory"));
     /// ```
     pub fn from_closest_match(name: impl AsRef<Path>) -> Result<PathBuf, DatabaseError> {
@@ -560,6 +564,7 @@ impl DatabaseManager {
     /// #### Creating a new `DatabaseManager`
     /// ```no_run
     /// # use database::DatabaseManager;
+    /// # use database::DatabaseError;
     /// # use std::error::Error;
     /// #
     /// # fn main() -> Result<(), DatabaseError> {
@@ -631,36 +636,45 @@ impl DatabaseManager {
         T: AsRef<[u8]>,
     {
         let id = id.into();
+        let bytes = data.as_ref();
 
         let path = self.locate_absolute(id)?;
 
-        if path.is_dir() {
-            return Err(DatabaseError::NotAFile(path));
-        }
-
-        let buffer = path.with_extension("tmp");
-
-        let mut file = File::create(&buffer)?;
-        file.write_all(data.as_ref())?;
-        file.sync_all()?;
-        fs::rename(&buffer, &path)?;
+        self.overwrite_path_atomic_with(&path, |file| {
+            file.write_all(bytes)?;
+            Ok(bytes.len() as u64)
+        })?;
 
         Ok(())
     }
 
-    // pub fn read<T>(&self, id: impl Into<ItemId>) -> Result<T, DatabaseError> {
-    //     let id = id.into();
+    pub fn overwrite_existing_json<T: serde::Serialize>(
+        &self,
+        id: impl Into<ItemId>,
+        value: &T,
+    ) -> Result<(), DatabaseError> {
+        let data = serde_json::to_vec(value)?;
+        self.overwrite_existing(id, data)
+    }
 
-    //     let path = self.locate(id)?;
+    pub fn overwrite_existing_binary<T: serde::Serialize>(
+        &self,
+        id: impl Into<ItemId>,
+        value: &T,
+    ) -> Result<(), DatabaseError> {
+        let data = bincode::serialize(value)?;
+        self.overwrite_existing(id, data)
+    }
 
-    //     if path.is_dir() {
-    //         return Err(DatabaseError::NotAFile(path));
-    //     }
-
-    //     let data = fs::read_to_string(path)?;
-
-    //     Ok(deserialized_data)
-    // }
+    pub fn overwrite_existing_from_reader<R: io::Read>(
+        &self,
+        id: impl Into<ItemId>,
+        reader: &mut R,
+    ) -> Result<u64, DatabaseError> {
+        let id = id.into();
+        let path = self.locate_absolute(id)?;
+        self.overwrite_path_atomic_with(&path, |file| Ok(io::copy(reader, file)?))
+    }
 
     /// Returns all existing `ItemId` as a `Vec<ItemId>`
     pub fn get_all(&self, sorted: impl Into<bool>) -> Vec<ItemId> {
@@ -1407,6 +1421,31 @@ impl DatabaseManager {
         }
 
         Ok(&matches[id.get_index()])
+    }
+
+    fn overwrite_path_atomic_with<F>(&self, path: &Path, write_fn: F) -> Result<u64, DatabaseError>
+    where
+        F: FnOnce(&mut File) -> Result<u64, DatabaseError>,
+    {
+        if path.is_dir() {
+            return Err(DatabaseError::NotAFile(path.to_path_buf()));
+        }
+
+        let buffer = path.with_extension("tmp");
+
+        let result = (|| {
+            let mut file = File::create(&buffer)?;
+            let bytes_written = write_fn(&mut file)?;
+            file.sync_all()?;
+            fs::rename(&buffer, path)?;
+            Ok(bytes_written)
+        })();
+
+        if result.is_err() && buffer.exists() {
+            let _ = remove_file(&buffer);
+        }
+
+        result
     }
 
     fn collect_paths_in_scope(&self, scope_absolute: &Path, recursive: bool) -> Result<Vec<PathBuf>, DatabaseError> {
