@@ -1,9 +1,8 @@
 //! # Database
 //! `Database` is a file management system designed to make reading and writing to a local database easier
 
-use std::{collections::HashMap, env::{current_dir, current_exe}, ffi::OsStr, fs::{self, File, create_dir, remove_dir, remove_dir_all, remove_file}, hash::Hash, io::{self, Write}, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
+use std::{collections::{HashMap, HashSet}, env::{current_dir, current_exe}, ffi::OsStr, fs::{self, File, create_dir, remove_dir, remove_dir_all, remove_file}, hash::Hash, io::{self, Write}, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
 use thiserror::Error;
-use fs_more::{self, directory::{BrokenSymlinkBehaviour, CollidingSubDirectoryBehaviour, DestinationDirectoryRule, DirectoryMoveAllowedStrategies, DirectoryMoveByCopyOptions, DirectoryMoveOptions, SymlinkBehaviour, move_directory}, error::MoveDirectoryError, file::CollidingFileBehaviour};
 
 // Constants
 const ZERO: u64 = 0;
@@ -25,6 +24,12 @@ pub enum DatabaseError {
     NoMatchingID(String),
     #[error("ID '{0}' already exists")]
     IdAlreadyExists(String),
+    #[error("Source and destination are identical: '{0}'")]
+    IdenticalSourceDestination(PathBuf),
+    #[error("Export destination is inside the database: '{0}'")]
+    ExportDestinationInsideDatabase(PathBuf),
+    #[error("Import source is inside the database: '{0}'")]
+    ImportSourceInsideDatabase(PathBuf),
     #[error("Index {index} out of bounds for ID '{id}' (len: {len})")]
     IndexOutOfBounds {
         id: String,
@@ -45,8 +50,6 @@ pub enum DatabaseError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     PathBufConversion(#[from] std::path::StripPrefixError),
-    #[error(transparent)]
-    MigrationError(#[from] MoveDirectoryError)
 }
 
 #[derive(Debug, PartialEq, Clone, Default)]
@@ -125,6 +128,21 @@ impl From<bool> for Serialize {
             false => Serialize::NoSerialize,
         }
     }
+}
+
+#[derive(Debug, PartialEq, Clone, Default)]
+pub enum ExportMode {
+    #[default]
+    Copy,
+    Move,
+}
+
+#[derive(Debug, PartialEq, Clone, Default)]
+pub enum ScanPolicy {
+    DetectOnly,
+    RemoveNew,
+    #[default]
+    AddNew,
 }
 
 #[derive(Debug, Default, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
@@ -475,6 +493,44 @@ impl FileInformation {
 
     pub fn get_time_since_last_modified(&self) -> Option<&u64> {
         self.time_since_last_modified.as_ref()
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum ExternalChange {
+    Added { id: ItemId, path: PathBuf },
+    Removed { id: ItemId, path: PathBuf },
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct ScanReport {
+    scanned_from: ItemId,
+    recursive: bool,
+    added: Vec<ExternalChange>,
+    removed: Vec<ExternalChange>,
+    unchanged_count: usize,
+    total_changed_count: usize,
+}
+
+impl ScanReport {
+    pub fn get_scan_from(&self) -> &ItemId {
+        &self.scanned_from
+    }
+
+    pub fn get_added(&self) -> &Vec<ExternalChange> {
+        &self.added
+    }
+
+    pub fn get_removed(&self) -> &Vec<ExternalChange> {
+        &self.removed
+    }
+
+    pub fn get_unchanged_count(&self) -> usize {
+        self.unchanged_count
+    }
+
+    pub fn get_total_changed_count(&self) -> usize {
+        self.total_changed_count
     }
 }
 
@@ -844,26 +900,438 @@ impl DatabaseManager {
         Ok(ids)
     }
 
+    pub fn scan_for_changes(
+        &mut self,
+        scan_from: impl Into<ItemId>,
+        policy: ScanPolicy,
+        recursive: bool,
+    ) -> Result<ScanReport, DatabaseError> {
+        let scan_from = scan_from.into();
+        let scan_from_absolute = self.locate_absolute(&scan_from)?;
+        if !scan_from_absolute.is_dir() {
+            return Err(DatabaseError::NotADirectory(scan_from_absolute));
+        }
+
+        let scope_relative = if scan_from.get_name().is_empty() {
+            None
+        } else {
+            Some(self.locate_relative(&scan_from)?.clone())
+        };
+
+        let discovered_paths = self.collect_paths_in_scope(&scan_from_absolute, recursive)?;
+        let discovered_set: HashSet<PathBuf> = discovered_paths.iter().cloned().collect();
+
+        let mut existing_in_scope_set = HashSet::new();
+        let mut removed = Vec::new();
+        let mut unchanged_count = 0usize;
+
+        for (name, paths) in &self.items {
+            for (index, path) in paths.iter().enumerate() {
+                if !is_path_in_scope(path, scope_relative.as_deref(), recursive) {
+                    continue;
+                }
+
+                existing_in_scope_set.insert(path.clone());
+
+                if discovered_set.contains(path) {
+                    unchanged_count += 1;
+                } else {
+                    removed.push(ExternalChange::Removed {
+                        id: ItemId::with_index(name.clone(), index),
+                        path: path.clone(),
+                    });
+                }
+            }
+        }
+
+        let mut added_paths: Vec<PathBuf> = discovered_paths
+            .into_iter()
+            .filter(|path| !existing_in_scope_set.contains(path))
+            .collect();
+
+        let mut added = Vec::new();
+        let mut add_offsets: HashMap<String, usize> = HashMap::new();
+        for path in &added_paths {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(DatabaseError::OsStringConversion)?
+                .to_string();
+            let base_len = self.items.get(&name).map(|paths| paths.len()).unwrap_or(0);
+            let offset = add_offsets.entry(name.clone()).or_insert(0);
+            let index = base_len + *offset;
+            *offset += 1;
+
+            added.push(ExternalChange::Added {
+                id: ItemId::with_index(name, index),
+                path: path.clone(),
+            });
+        }
+
+        let mut empty_keys = Vec::new();
+        for (name, paths) in self.items.iter_mut() {
+            paths.retain(|path| {
+                !is_path_in_scope(path, scope_relative.as_deref(), recursive) || discovered_set.contains(path)
+            });
+            if paths.is_empty() {
+                empty_keys.push(name.clone());
+            }
+        }
+        for key in empty_keys {
+            self.items.remove(&key);
+        }
+
+        match policy {
+            ScanPolicy::DetectOnly => (),
+            ScanPolicy::AddNew => {
+                for path in &added_paths {
+                    let name = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or(DatabaseError::OsStringConversion)?
+                        .to_string();
+                    self.items.entry(name).or_default().push(path.clone());
+                }
+            }
+            ScanPolicy::RemoveNew => {
+                added_paths.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+                for path in added_paths {
+                    let absolute = self.path.join(&path);
+                    if !absolute.exists() {
+                        continue;
+                    }
+
+                    if absolute.is_dir() {
+                        remove_dir_all(&absolute)?;
+                    } else if absolute.is_file() {
+                        remove_file(&absolute)?;
+                    }
+                }
+            }
+        }
+
+        let total_changed_count = added.len() + removed.len();
+
+        Ok(ScanReport {
+            scanned_from: scan_from,
+            recursive,
+            added,
+            removed,
+            unchanged_count,
+            total_changed_count,
+        })
+    }
+
     /// Migrate the database to a different directory overwriting any collisions
     pub fn migrate_database(&mut self, to: impl AsRef<Path>) -> Result<(), DatabaseError> {
         let destination = to.as_ref().to_path_buf();
+        let name = self
+            .path
+            .file_name()
+            .ok_or_else(|| DatabaseError::NotADirectory(self.path.clone()))?;
+        let destination_database_path = destination.join(name);
 
-        let move_options = DirectoryMoveOptions {
-            destination_directory_rule: DestinationDirectoryRule::AllowNonEmpty {
-                colliding_file_behaviour: CollidingFileBehaviour::Overwrite,
-                colliding_subdirectory_behaviour: CollidingSubDirectoryBehaviour::Continue
-            },
-            allowed_strategies: DirectoryMoveAllowedStrategies::OnlyCopyAndDelete {
-                options: DirectoryMoveByCopyOptions {
-                    symlink_behaviour: SymlinkBehaviour::Keep,
-                    broken_symlink_behaviour: BrokenSymlinkBehaviour::Keep
-                }
+        if destination_database_path.exists() {
+            remove_dir_all(&destination_database_path)?;
+        }
+
+        copy_directory_recursive(&self.path, &destination_database_path)?;
+        remove_dir_all(&self.path)?;
+        
+        self.path = destination_database_path;
+
+        Ok(())
+    }
+
+    /// Migrate a file or folder managed by this database to another directory in the database.
+    ///
+    /// `to` must point to a directory item (or the database root ID).
+    pub fn migrate_item(&mut self, id: impl Into<ItemId>, to: impl Into<ItemId>) -> Result<(), DatabaseError> {
+        let id = id.into();
+        let to = to.into();
+
+        if id.get_name().is_empty() {
+            return Err(DatabaseError::RootIdUnsupported);
+        }
+
+        let destination_dir = self.locate_absolute(&to)?;
+        if !destination_dir.is_dir() {
+            return Err(DatabaseError::NotADirectory(destination_dir));
+        }
+
+        let source_absolute = self.locate_absolute(&id)?;
+        let source_name = source_absolute
+            .file_name()
+            .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))?;
+        let destination_absolute = destination_dir.join(source_name);
+
+        if destination_absolute == source_absolute {
+            return Err(DatabaseError::IdenticalSourceDestination(destination_absolute));
+        }
+
+        if destination_absolute.exists() {
+            if destination_absolute.is_dir() {
+                remove_dir_all(&destination_absolute)?;
+            } else {
+                remove_file(&destination_absolute)?;
+            }
+        }
+
+        fs::rename(&source_absolute, &destination_absolute)?;
+
+        let old_name = id.get_name().to_string();
+        let old_paths = self
+            .items
+            .get_mut(&old_name)
+            .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))?;
+
+        if id.get_index() >= old_paths.len() {
+            return Err(DatabaseError::IndexOutOfBounds {
+                id: id.as_string(),
+                index: id.get_index(),
+                len: old_paths.len(),
+            });
+        }
+
+        old_paths.remove(id.get_index());
+        if old_paths.is_empty() {
+            self.items.remove(&old_name);
+        }
+
+        let relative_destination = destination_absolute
+            .strip_prefix(&self.path)?
+            .to_path_buf();
+        let new_name = match relative_destination.file_name() {
+            Some(name) => os_str_to_string(Some(name))?,
+            None => old_name,
+        };
+
+        self.items.entry(new_name).or_default().push(relative_destination);
+
+        Ok(())
+    }
+
+    /// Export a file or folder to an external directory.
+    ///
+    /// - `ExportMode::Copy` keeps the item in the database.
+    /// - `ExportMode::Move` removes the item from the database after transfer.
+    pub fn export_item(
+        &mut self,
+        id: impl Into<ItemId>,
+        to: impl AsRef<Path>,
+        mode: ExportMode,
+    ) -> Result<(), DatabaseError> {
+        let id = id.into();
+        let destination_dir = {
+            let to = to.as_ref();
+            if to.is_absolute() {
+                to.to_path_buf()
+            } else {
+                current_dir()?.join(to)
             }
         };
 
-        move_directory(&self.path, &destination, move_options)?;
-        
-        self.path = destination;
+        if id.get_name().is_empty() {
+            return Err(DatabaseError::RootIdUnsupported);
+        }
+
+        if destination_dir.starts_with(&self.path) {
+            return Err(DatabaseError::ExportDestinationInsideDatabase(destination_dir));
+        }
+
+        fs::create_dir_all(&destination_dir)?;
+        if !destination_dir.is_dir() {
+            return Err(DatabaseError::NotADirectory(destination_dir));
+        }
+
+        let source_absolute = self.locate_absolute(&id)?;
+        let source_name = source_absolute
+            .file_name()
+            .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))?;
+        let destination_absolute = destination_dir.join(source_name);
+
+        if destination_absolute == source_absolute {
+            return Err(DatabaseError::IdenticalSourceDestination(destination_absolute));
+        }
+
+        if destination_absolute.exists() {
+            if destination_absolute.is_dir() {
+                remove_dir_all(&destination_absolute)?;
+            } else {
+                remove_file(&destination_absolute)?;
+            }
+        }
+
+        match mode {
+            ExportMode::Copy => {
+                if source_absolute.is_dir() {
+                    copy_directory_recursive(&source_absolute, &destination_absolute)?;
+                } else {
+                    fs::copy(&source_absolute, &destination_absolute)?;
+                }
+            }
+            ExportMode::Move => {
+                match fs::rename(&source_absolute, &destination_absolute) {
+                    Ok(_) => (),
+                    Err(_) => {
+                        if source_absolute.is_dir() {
+                            copy_directory_recursive(&source_absolute, &destination_absolute)?;
+                            remove_dir_all(&source_absolute)?;
+                        } else {
+                            fs::copy(&source_absolute, &destination_absolute)?;
+                            remove_file(&source_absolute)?;
+                        }
+                    }
+                }
+
+                let key = id.get_name().to_string();
+                let paths = self
+                    .items
+                    .get_mut(&key)
+                    .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))?;
+
+                if id.get_index() >= paths.len() {
+                    return Err(DatabaseError::IndexOutOfBounds {
+                        id: id.as_string(),
+                        index: id.get_index(),
+                        len: paths.len(),
+                    });
+                }
+
+                paths.remove(id.get_index());
+                if paths.is_empty() {
+                    self.items.remove(&key);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Import an external file or folder into a directory in the database.
+    ///
+    /// - `from` is a path to an item outside this database.
+    /// - `to` is the destination parent directory `ItemId` in the database.
+    /// - Errors if an item with the same name already exists in `to`.
+    pub fn import_item(
+        &mut self,
+        from: impl AsRef<Path>,
+        to: impl Into<ItemId>,
+    ) -> Result<(), DatabaseError> {
+        let source_path = {
+            let from = from.as_ref();
+            if from.is_absolute() {
+                from.to_path_buf()
+            } else {
+                current_dir()?.join(from)
+            }
+        };
+        let to = to.into();
+
+        if source_path.starts_with(&self.path) {
+            return Err(DatabaseError::ImportSourceInsideDatabase(source_path));
+        }
+
+        let destination_parent = self.locate_absolute(&to)?;
+        if !destination_parent.is_dir() {
+            return Err(DatabaseError::NotADirectory(destination_parent));
+        }
+
+        let item_name = source_path
+            .file_name()
+            .ok_or_else(|| DatabaseError::NotAFile(source_path.clone()))?
+            .to_string_lossy()
+            .to_string();
+
+        let destination_absolute = destination_parent.join(&item_name);
+        let destination_relative = if to.get_name().is_empty() {
+            PathBuf::from(&item_name)
+        } else {
+            let mut relative = self.locate_relative(&to)?.to_path_buf();
+            relative.push(&item_name);
+            relative
+        };
+
+        if destination_absolute.exists()
+            || self
+                .items
+                .get(&item_name)
+                .is_some_and(|paths| paths.iter().any(|path| path == &destination_relative))
+        {
+            return Err(DatabaseError::IdAlreadyExists(item_name));
+        }
+
+        if source_path.is_dir() {
+            copy_directory_recursive(&source_path, &destination_absolute)?;
+        } else if source_path.is_file() {
+            fs::copy(&source_path, &destination_absolute)?;
+        } else {
+            return Err(DatabaseError::NoMatchingID(source_path.display().to_string()));
+        }
+
+        self.items.entry(item_name).or_default().push(destination_relative);
+
+        Ok(())
+    }
+
+    /// Duplicate a file or folder to a target parent directory in the database with a new name.
+    ///
+    /// Rules:
+    /// - `id` is the source item to duplicate.
+    /// - `parent` is the destination parent and must be a directory (or database root).
+    /// - `name` is required and used as the duplicated item's name.
+    /// - Errors if an item with `name` already exists in `parent`.
+    pub fn duplicate_item(
+        &mut self,
+        id: impl Into<ItemId>,
+        parent: impl Into<ItemId>,
+        name: impl AsRef<str>,
+    ) -> Result<(), DatabaseError> {
+        let id = id.into();
+        let parent = parent.into();
+        let name = name.as_ref().to_owned();
+
+        if id.get_name().is_empty() {
+            return Err(DatabaseError::RootIdUnsupported);
+        }
+
+        let source_absolute = self.locate_absolute(&id)?;
+        let parent_absolute = self.locate_absolute(&parent)?;
+        if !parent_absolute.is_dir() {
+            return Err(DatabaseError::NotADirectory(parent_absolute));
+        }
+
+        let destination_absolute = parent_absolute.join(&name);
+        let destination_relative = if parent.get_name().is_empty() {
+            PathBuf::from(&name)
+        } else {
+            let mut path = self.locate_relative(&parent)?.to_path_buf();
+            path.push(&name);
+            path
+        };
+
+        if destination_absolute.exists()
+            || self
+                .items
+                .get(&name)
+                .is_some_and(|paths| paths.iter().any(|path| path == &destination_relative))
+        {
+            return Err(DatabaseError::IdAlreadyExists(name));
+        }
+
+        if source_absolute.is_dir() {
+            copy_directory_recursive(&source_absolute, &destination_absolute)?;
+        } else {
+            fs::copy(&source_absolute, &destination_absolute)?;
+        }
+
+        self.items
+            .entry(destination_relative
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default())
+            .or_default()
+            .push(destination_relative);
 
         Ok(())
     }
@@ -940,6 +1408,40 @@ impl DatabaseManager {
 
         Ok(&matches[id.get_index()])
     }
+
+    fn collect_paths_in_scope(&self, scope_absolute: &Path, recursive: bool) -> Result<Vec<PathBuf>, DatabaseError> {
+        let mut collected = Vec::new();
+
+        if recursive {
+            let mut stack = vec![scope_absolute.to_path_buf()];
+            while let Some(directory) = stack.pop() {
+                for entry in fs::read_dir(&directory)? {
+                    let entry = entry?;
+                    let absolute_path = entry.path();
+                    let relative_path = absolute_path.strip_prefix(&self.path)?.to_path_buf();
+
+                    if absolute_path.is_dir() {
+                        collected.push(relative_path);
+                        stack.push(absolute_path);
+                    } else if absolute_path.is_file() {
+                        collected.push(relative_path);
+                    }
+                }
+            }
+        } else {
+            for entry in fs::read_dir(scope_absolute)? {
+                let entry = entry?;
+                let absolute_path = entry.path();
+                let relative_path = absolute_path.strip_prefix(&self.path)?.to_path_buf();
+
+                if absolute_path.is_dir() || absolute_path.is_file() {
+                    collected.push(relative_path);
+                }
+            }
+        }
+
+        Ok(collected)
+    }
 }
 
 // -------- Functions --------
@@ -992,6 +1494,43 @@ fn sys_time_to_time_since(time: io::Result<SystemTime>) -> Option<u64> {
     };
 
     sys_time_to_unsigned_int(Ok(UNIX_EPOCH + duration))
+}
+
+fn copy_directory_recursive(from: &Path, to: &Path) -> Result<(), DatabaseError> {
+    fs::create_dir_all(to)?;
+
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = to.join(entry.file_name());
+
+        if source_path.is_dir() {
+            copy_directory_recursive(&source_path, &destination_path)?;
+        } else {
+            fs::copy(&source_path, &destination_path)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn is_path_in_scope(path: &Path, scope_relative: Option<&Path>, recursive: bool) -> bool {
+    match scope_relative {
+        None => {
+            if recursive {
+                true
+            } else {
+                path.parent().is_some_and(|parent| parent.as_os_str().is_empty())
+            }
+        }
+        Some(scope_relative) => {
+            if recursive {
+                path.starts_with(scope_relative) && path != scope_relative
+            } else {
+                path.parent() == Some(scope_relative)
+            }
+        }
+    }
 }
 
 /// Deletes the passed directory

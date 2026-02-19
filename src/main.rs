@@ -229,8 +229,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match config.mode {
         Mode::Interactive => {
-            let elapsed = run_scenario(&path, true)?;
-            println!("Total elapsed from first to last call: {:.3?}", elapsed);
+            run_scenario(&path, true)?;
         }
         Mode::Bench => {
             let mut total = Duration::ZERO;
