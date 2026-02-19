@@ -2,6 +2,13 @@
 name = "file_database"
 version = "0.1.0"
 edition = "2024"
+description = "A local filesystem database with ID based file and directory management."
+license = "MIT"
+readme = "readme.md"
+documentation = "https://docs.rs/file_database"
+keywords = ["filesystem", "database", "files", "paths", "index", "manager"]
+include = ["src/**/*", "Cargo.toml", "Cargo.lock", "readme.md"]
+exclude = ["target/**", ".DS_Store"]
 
 [dependencies]
 fs-more = "0.8.1"
