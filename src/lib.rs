@@ -25,6 +25,8 @@ pub enum DatabaseError {
     NoMatchingID(String),
     #[error("ID '{0}' already exists")]
     IdAlreadyExists(String),
+    #[error("Source and destination are identical: '{0}'")]
+    IdenticalSourceDestination(PathBuf),
     #[error("Index {index} out of bounds for ID '{id}' (len: {len})")]
     IndexOutOfBounds {
         id: String,
@@ -864,6 +866,74 @@ impl DatabaseManager {
         move_directory(&self.path, &destination, move_options)?;
         
         self.path = destination;
+
+        Ok(())
+    }
+
+    /// Migrate a file or folder managed by this database to another directory in the database.
+    ///
+    /// `to` must point to a directory item (or the database root ID).
+    pub fn migrate_item(&mut self, id: impl Into<ItemId>, to: impl Into<ItemId>) -> Result<(), DatabaseError> {
+        let id = id.into();
+        let to = to.into();
+
+        if id.get_name().is_empty() {
+            return Err(DatabaseError::RootIdUnsupported);
+        }
+
+        let destination_dir = self.locate_absolute(&to)?;
+        if !destination_dir.is_dir() {
+            return Err(DatabaseError::NotADirectory(destination_dir));
+        }
+
+        let source_absolute = self.locate_absolute(&id)?;
+        let source_name = source_absolute
+            .file_name()
+            .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))?;
+        let destination_absolute = destination_dir.join(source_name);
+
+        if destination_absolute == source_absolute {
+            return Err(DatabaseError::IdenticalSourceDestination(destination_absolute));
+        }
+
+        if destination_absolute.exists() {
+            if destination_absolute.is_dir() {
+                remove_dir_all(&destination_absolute)?;
+            } else {
+                remove_file(&destination_absolute)?;
+            }
+        }
+
+        fs::rename(&source_absolute, &destination_absolute)?;
+
+        let old_name = id.get_name().to_string();
+        let old_paths = self
+            .items
+            .get_mut(&old_name)
+            .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))?;
+
+        if id.get_index() >= old_paths.len() {
+            return Err(DatabaseError::IndexOutOfBounds {
+                id: id.as_string(),
+                index: id.get_index(),
+                len: old_paths.len(),
+            });
+        }
+
+        old_paths.remove(id.get_index());
+        if old_paths.is_empty() {
+            self.items.remove(&old_name);
+        }
+
+        let relative_destination = destination_absolute
+            .strip_prefix(&self.path)?
+            .to_path_buf();
+        let new_name = match relative_destination.file_name() {
+            Some(name) => os_str_to_string(Some(name))?,
+            None => old_name,
+        };
+
+        self.items.entry(new_name).or_default().push(relative_destination);
 
         Ok(())
     }
