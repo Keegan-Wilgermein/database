@@ -14,18 +14,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // let file = Test::default();
 
-    database.write_new("test_folder", ItemId::database_id())?;
-    database.write_new("test_file.txt", ItemId::id("test_folder"))?;
+    let test_id = ItemId::id("test_folder");
 
-    println!("All one: {:?}", database.get_all(ShouldSort::Sort));
+    database.write_new(&test_id, ItemId::database_id())?;
+    database.write_new("test_file.txt", &test_id)?;
 
-    database.rename("test_folder", "rename_test")?;
-
-    println!("All two: {:?}", database.get_all(ShouldSort::Sort));
+    println!("{:?}", database.get_all(ShouldSort::Sort));
     
     // database.overwrite_existing("test.json", file);
     
-    // database.delete(ItemId::database_id(), ForceDeletion::Force)?;
+    database.delete(ItemId::database_id(), ForceDeletion::Force)?;
 
     Ok(())
 }

@@ -263,8 +263,14 @@ impl<T> From<T> for ItemId
 where
     T: Into<String>,
 {
-    fn from(s: T) -> Self {
-        ItemId(s.into())
+    fn from(value: T) -> Self {
+        Self(value.into())
+    }
+}
+
+impl From<&ItemId> for ItemId {
+    fn from(value: &ItemId) -> Self {
+        value.clone()
     }
 }
 
@@ -281,8 +287,12 @@ impl ItemId {
         Self(id.into())
     }
 
-    pub fn as_string(self) -> String {
-        self.0
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn as_string(&self) -> String {
+        self.0.clone()
     }
 }
 
