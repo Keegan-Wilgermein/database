@@ -79,8 +79,9 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
     Ok(Config { mode, runs })
 }
 
-fn step(interactive: bool, message: &str) -> Result<(), Box<dyn Error>> {
+fn step(interactive: bool, message: impl AsRef<str>) -> Result<(), Box<dyn Error>> {
     if interactive {
+        let message = message.as_ref();
         println!("\n[STEP] {message}");
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
@@ -102,93 +103,118 @@ fn run_scenario(path: &Path, interactive: bool) -> Result<Duration, Box<dyn Erro
     }
     step(interactive, "Created DatabaseManager (press Enter)")?;
 
-    let test_folder = ItemId::id("test_folder");
+    let test_folder_name = "test_folder";
+    let test_folder = ItemId::id(test_folder_name);
     database.write_new(&test_folder, ItemId::database_id())?;
     if interactive {
         println!("write_new folder OK: {:?}", test_folder);
     }
-    step(interactive, "Created folder test_folder (press Enter)")?;
+    step(interactive, format!("Created folder {} (press Enter)", test_folder_name))?;
 
-    let test_file = ItemId::id("test_file.txt");
+    let test_file_name = "test_file.txt";
+    let test_file = ItemId::id(test_file_name);
     database.write_new(&test_file, &test_folder)?;
     if interactive {
         println!("write_new nested file OK: {:?}", test_file);
     }
-    step(interactive, "Created nested test_file.txt (press Enter)")?;
+    step(interactive, format!("Created nested {} (press Enter)", test_file_name))?;
 
-    let root_test_file = ItemId::with_index("test_file.txt", 1);
-    database.write_new(ItemId::id("test_file.txt"), ItemId::database_id())?;
+    let root_test_file = ItemId::with_index(test_file_name, 1);
+    database.write_new(ItemId::id(test_file_name), ItemId::database_id())?;
     if interactive {
         println!("write_new root file OK: {:?}", root_test_file);
     }
-    step(interactive, "Created root test_file.txt (press Enter)")?;
+    step(interactive, format!("Created root {} (press Enter)", test_file_name))?;
 
-    database.rename(&root_test_file, "renamed_root.txt")?;
-    let renamed_root = ItemId::id("renamed_root.txt");
-    if interactive {
-        println!("rename(root test_file.txt -> renamed_root.txt) OK");
-    }
-    step(interactive, "Renamed root file (press Enter)")?;
+    let renamed_root_name = "renamed_root.txt";
+    let renamed_root = ItemId::id(renamed_root_name);
 
     let all = database.get_all(ShouldSort::Sort);
     if interactive {
         println!("get_all => {:?}", all);
     }
+    step(interactive, "Fetched all IDs (press Enter)")?;
 
     let root_children = database.get_by_parent(ItemId::database_id(), ShouldSort::Sort)?;
     if interactive {
         println!("get_by_parent(root) => {:?}", root_children);
     }
+    step(interactive, "Fetched root children (press Enter)")?;
 
     let folder_children = database.get_by_parent(&test_folder, ShouldSort::Sort)?;
     if interactive {
-        println!("get_by_parent(test_folder) => {:?}", folder_children);
+        println!("get_by_parent({}) => {:?}", test_folder_name, folder_children);
     }
+    step(interactive, "Fetched folder children (press Enter)")?;
 
     let folder_relative = database.locate_relative(&test_folder)?;
     let folder_absolute = database.locate_absolute(&test_folder)?;
     if interactive {
-        println!("locate_relative(test_folder) => {}", folder_relative.display());
-        println!("locate_absolute(test_folder) => {}", folder_absolute.display());
+        println!("locate_relative({}) => {}", test_folder_name, folder_relative.display());
+        println!("locate_absolute({}) => {}", test_folder_name, folder_absolute.display());
     }
+    step(interactive, "Located folder paths (press Enter)")?;
 
     let file_relative = database.locate_relative(&test_file)?;
     let file_absolute = database.locate_absolute(&test_file)?;
     if interactive {
-        println!("locate_relative(test_file.txt) => {}", file_relative.display());
-        println!("locate_absolute(test_file.txt) => {}", file_absolute.display());
+        println!("locate_relative({}) => {}", test_file_name, file_relative.display());
+        println!("locate_absolute({}) => {}", test_file_name, file_absolute.display());
     }
+    step(interactive, "Located file paths (press Enter)")?;
 
     let file_paths = database.get_paths_for_id(&test_file)?;
     if interactive {
-        println!("get_paths_for_id(test_file.txt) => {:?}", file_paths);
+        println!("get_paths_for_id({}) => {:?}", test_file_name, file_paths);
     }
+    step(interactive, format!("Fetched shared paths for {} (press Enter)", test_file_name))?;
+
+    let file_ids = database.get_ids_from_shared_id(&test_file)?;
+    if interactive {
+        println!("get_ids_from_shared_id({}) => {:?}", test_file_name, file_ids);
+    }
+    step(interactive, format!("Fetched shared IDs for {} (press Enter)", test_file_name))?;
+
+    database.rename(&root_test_file, renamed_root_name)?;
+    if interactive {
+        println!("rename(root {} -> {}) OK", test_file_name, renamed_root_name);
+    }
+    step(interactive, "Renamed root file (press Enter)")?;
 
     database.overwrite_existing(&test_file, b"hello from overwrite_existing")?;
     if interactive {
-        println!("overwrite_existing(test_file.txt) OK");
+        println!("overwrite_existing({}) OK", test_file_name);
     }
+    step(interactive, "Overwrote file contents (press Enter)")?;
 
     let file_info = database.get_file_information(&test_file)?;
     if interactive {
         println!("get_file_information => {:?}", file_info);
     }
+    step(interactive, "Fetched file information (press Enter)")?;
 
-    database.rename(&test_file, "renamed.txt")?;
-    let renamed = ItemId::id("renamed.txt");
+    let renamed_name = "renamed.txt";
+    database.rename(&test_file, renamed_name)?;
+    let renamed = ItemId::id(renamed_name);
     if interactive {
-        println!("rename(test_file.txt -> renamed.txt) OK");
+        println!("rename({} -> {}) OK", test_file_name, renamed_name);
     }
+    step(interactive, "Renamed nested file (press Enter)")?;
 
     let parent = database.get_parent(&renamed)?;
     if interactive {
-        println!("get_parent(renamed.txt) => {:?}", parent);
+        println!("get_parent({}) => {:?}", renamed_name, parent);
     }
+    step(interactive, "Fetched parent for renamed file (press Enter)")?;
 
     database.delete(&renamed, ForceDeletion::NoForce)?;
+    step(interactive, "Deleted renamed nested file (press Enter)")?;
     database.delete(&renamed_root, ForceDeletion::NoForce)?;
+    step(interactive, "Deleted renamed root file (press Enter)")?;
     database.delete(&test_folder, ForceDeletion::NoForce)?;
+    step(interactive, "Deleted test folder (press Enter)")?;
     database.delete(ItemId::database_id(), ForceDeletion::Force)?;
+    step(interactive, "Deleted database root (press Enter)")?;
 
     if interactive {
         println!("Cleanup OK");

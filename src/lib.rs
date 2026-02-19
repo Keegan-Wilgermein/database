@@ -830,6 +830,20 @@ impl DatabaseManager {
             .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))
     }
 
+    pub fn get_ids_from_shared_id(&self, id: impl Into<ItemId>) -> Result<Vec<ItemId>, DatabaseError> {
+        let id = id.into();
+
+        let paths = self.get_paths_for_id(&id)?;
+
+        let ids = paths
+            .iter()
+            .enumerate()
+            .map(|(index, _)| ItemId::with_index(id.get_name().to_string(), index))
+            .collect();
+
+        Ok(ids)
+    }
+
     /// Migrate the database to a different directory overwriting any collisions
     pub fn migrate_database(&mut self, to: impl AsRef<Path>) -> Result<(), DatabaseError> {
         let destination = to.as_ref().to_path_buf();
