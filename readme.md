@@ -27,7 +27,7 @@ This means duplicate names are allowed. `ItemId::id("name")` always means index 
 
 ```toml
 [dependencies]
-file_database = "0.1.0"
+file_database = "0.1.2"
 ```
 
 ## Quick start
@@ -162,4 +162,9 @@ Common variants include:
 
 ## License
 
-This crate is licensed under the MIT licesne
+This crate is licensed under the MIT license
+
+Feel free to create an issue in the repo if anything isn't working correctly
+
+### Repo
+[file_database](https://github.com/Keegan-Wilgermein/database)

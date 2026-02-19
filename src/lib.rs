@@ -1370,7 +1370,7 @@ impl DatabaseManager {
             });
         }
 
-        old_paths.remove(id.get_index());
+        old_paths.swap_remove(id.get_index());
         if old_paths.is_empty() {
             self.items.remove(&old_name);
         }
@@ -1444,7 +1444,7 @@ impl DatabaseManager {
             });
         }
 
-        paths.remove(id.get_index());
+        paths.swap_remove(id.get_index());
         if paths.is_empty() {
             self.items.remove(&key);
         }
@@ -1864,7 +1864,7 @@ impl DatabaseManager {
             });
         }
 
-        old_paths.remove(id.get_index());
+        old_paths.swap_remove(id.get_index());
         if old_paths.is_empty() {
             self.items.remove(&old_name);
         }
@@ -1998,7 +1998,7 @@ impl DatabaseManager {
                     });
                 }
 
-                paths.remove(id.get_index());
+                paths.swap_remove(id.get_index());
                 if paths.is_empty() {
                     self.items.remove(&key);
                 }
