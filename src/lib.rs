@@ -237,16 +237,38 @@ impl GenPath {
     /// ```
     pub fn from_closest_match(name: impl AsRef<Path>) -> Result<PathBuf, DatabaseError> {
         let exe = current_exe()?;
+        let target = name.as_ref();
+        let target_name = target.as_os_str();
 
         for path in exe.ancestors() {
-            if path.ends_with(&name) {
-                if path.is_dir() {
-                    return Ok(path.to_path_buf())
+            if !path.is_dir() {
+                continue;
+            }
+
+            if path.file_name().is_some_and(|dir_name| dir_name == target_name) {
+                return Ok(path.to_path_buf());
+            }
+
+            if let Ok(entries) = fs::read_dir(path) {
+                for entry in entries {
+                    let entry = match entry {
+                        Ok(entry) => entry,
+                        Err(_) => continue,
+                    };
+
+                    let child_path = entry.path();
+                    if !child_path.is_dir() {
+                        continue;
+                    }
+
+                    if entry.file_name() == target_name {
+                        return Ok(child_path);
+                    }
                 }
             }
         }
 
-        let name_as_string = match name.as_ref().to_owned().into_os_string().into_string() {
+        let name_as_string = match target.to_owned().into_os_string().into_string() {
             Ok(string) => string,
             Err(_) => return Err(DatabaseError::OsStringConversion)
         };
