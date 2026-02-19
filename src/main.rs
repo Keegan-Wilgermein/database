@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     
     // database.overwrite_existing("test.json", file);
     
-    database.delete(ItemId::database_id(), ForceDeletion::Force)?;
+    // database.delete(ItemId::database_id(), ForceDeletion::Force)?;
 
     Ok(())
 }
