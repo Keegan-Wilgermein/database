@@ -1,8 +1,7 @@
 use std::{
     env,
     error::Error,
-    fs,
-    io,
+    fs, io,
     path::Path,
     time::{Duration, Instant},
 };
@@ -12,17 +11,29 @@ use database::*;
 const DEFAULT_RUNS: u32 = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Execution mode for the scenario runner.
 enum Mode {
     Interactive,
     Bench,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Runtime configuration parsed from CLI arguments.
 struct Config {
     mode: Mode,
     runs: u32,
 }
 
+/// Parses command-line arguments into **`Config`**.
+///
+/// Supported flags:
+/// - `interactive` / `--interactive` / `--mode interactive`
+/// - `bench` / `--bench` / `--mode bench`
+/// - `--runs N` / `--runs=N`
+///
+/// # Errors
+/// Returns an error for invalid mode values, missing flag values, parse failures,
+/// or `--runs 0`.
 fn parse_config() -> Result<Config, Box<dyn Error>> {
     let mut mode = Mode::Bench;
     let mut runs = DEFAULT_RUNS;
@@ -51,9 +62,7 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
                 }
             }
             "--runs" => {
-                let value = args
-                    .next()
-                    .ok_or("Missing value after --runs")?;
+                let value = args.next().ok_or("Missing value after --runs")?;
                 runs = value.parse::<u32>()?;
             }
             value if value.starts_with("--runs=") => {
@@ -63,7 +72,7 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
                 return Err(
                     "Usage: cargo run -- [interactive|bench] [--mode interactive|bench] [--runs N]"
                         .into(),
-                )
+                );
             }
         }
     }
@@ -79,6 +88,12 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
     Ok(Config { mode, runs })
 }
 
+/// Optional step gate used by interactive mode.
+///
+/// When `interactive` is true, prints `message` and waits for Enter.
+///
+/// # Errors
+/// Returns an error if stdin cannot be read.
 fn step(interactive: bool, message: impl AsRef<str>) -> Result<(), Box<dyn Error>> {
     if interactive {
         let message = message.as_ref();
@@ -89,6 +104,12 @@ fn step(interactive: bool, message: impl AsRef<str>) -> Result<(), Box<dyn Error
     Ok(())
 }
 
+/// Runs one full API scenario against a fresh database directory.
+///
+/// If `interactive` is true, prints progress and pauses between steps.
+///
+/// # Errors
+/// Returns an error if any file or database operation fails.
 fn run_scenario(path: &Path, interactive: bool) -> Result<Duration, Box<dyn Error>> {
     let db_path = path.join("database");
     if db_path.exists() {
@@ -109,7 +130,10 @@ fn run_scenario(path: &Path, interactive: bool) -> Result<Duration, Box<dyn Erro
     if interactive {
         println!("write_new folder OK: {:?}", test_folder);
     }
-    step(interactive, format!("Created folder {} (press Enter)", test_folder_name))?;
+    step(
+        interactive,
+        format!("Created folder {} (press Enter)", test_folder_name),
+    )?;
 
     let test_file_name = "test_file.txt";
     let test_file = ItemId::id(test_file_name);
@@ -117,14 +141,20 @@ fn run_scenario(path: &Path, interactive: bool) -> Result<Duration, Box<dyn Erro
     if interactive {
         println!("write_new nested file OK: {:?}", test_file);
     }
-    step(interactive, format!("Created nested {} (press Enter)", test_file_name))?;
+    step(
+        interactive,
+        format!("Created nested {} (press Enter)", test_file_name),
+    )?;
 
     let root_test_file = ItemId::with_index(test_file_name, 1);
     database.write_new(ItemId::id(test_file_name), ItemId::database_id())?;
     if interactive {
         println!("write_new root file OK: {:?}", root_test_file);
     }
-    step(interactive, format!("Created root {} (press Enter)", test_file_name))?;
+    step(
+        interactive,
+        format!("Created root {} (press Enter)", test_file_name),
+    )?;
 
     let renamed_root_name = "renamed_root.txt";
     let renamed_root = ItemId::id(renamed_root_name);
@@ -143,23 +173,42 @@ fn run_scenario(path: &Path, interactive: bool) -> Result<Duration, Box<dyn Erro
 
     let folder_children = database.get_by_parent(&test_folder, ShouldSort::Sort)?;
     if interactive {
-        println!("get_by_parent({}) => {:?}", test_folder_name, folder_children);
+        println!(
+            "get_by_parent({}) => {:?}",
+            test_folder_name, folder_children
+        );
     }
     step(interactive, "Fetched folder children (press Enter)")?;
 
     let folder_relative = database.locate_relative(&test_folder)?;
     let folder_absolute = database.locate_absolute(&test_folder)?;
     if interactive {
-        println!("locate_relative({}) => {}", test_folder_name, folder_relative.display());
-        println!("locate_absolute({}) => {}", test_folder_name, folder_absolute.display());
+        println!(
+            "locate_relative({}) => {}",
+            test_folder_name,
+            folder_relative.display()
+        );
+        println!(
+            "locate_absolute({}) => {}",
+            test_folder_name,
+            folder_absolute.display()
+        );
     }
     step(interactive, "Located folder paths (press Enter)")?;
 
     let file_relative = database.locate_relative(&test_file)?;
     let file_absolute = database.locate_absolute(&test_file)?;
     if interactive {
-        println!("locate_relative({}) => {}", test_file_name, file_relative.display());
-        println!("locate_absolute({}) => {}", test_file_name, file_absolute.display());
+        println!(
+            "locate_relative({}) => {}",
+            test_file_name,
+            file_relative.display()
+        );
+        println!(
+            "locate_absolute({}) => {}",
+            test_file_name,
+            file_absolute.display()
+        );
     }
     step(interactive, "Located file paths (press Enter)")?;
 
@@ -167,17 +216,29 @@ fn run_scenario(path: &Path, interactive: bool) -> Result<Duration, Box<dyn Erro
     if interactive {
         println!("get_paths_for_id({}) => {:?}", test_file_name, file_paths);
     }
-    step(interactive, format!("Fetched shared paths for {} (press Enter)", test_file_name))?;
+    step(
+        interactive,
+        format!("Fetched shared paths for {} (press Enter)", test_file_name),
+    )?;
 
     let file_ids = database.get_ids_from_shared_id(&test_file)?;
     if interactive {
-        println!("get_ids_from_shared_id({}) => {:?}", test_file_name, file_ids);
+        println!(
+            "get_ids_from_shared_id({}) => {:?}",
+            test_file_name, file_ids
+        );
     }
-    step(interactive, format!("Fetched shared IDs for {} (press Enter)", test_file_name))?;
+    step(
+        interactive,
+        format!("Fetched shared IDs for {} (press Enter)", test_file_name),
+    )?;
 
     database.rename(&root_test_file, renamed_root_name)?;
     if interactive {
-        println!("rename(root {} -> {}) OK", test_file_name, renamed_root_name);
+        println!(
+            "rename(root {} -> {}) OK",
+            test_file_name, renamed_root_name
+        );
     }
     step(interactive, "Renamed root file (press Enter)")?;
 
@@ -223,6 +284,11 @@ fn run_scenario(path: &Path, interactive: bool) -> Result<Duration, Box<dyn Erro
     Ok(start.elapsed())
 }
 
+/// Starts either interactive mode or benchmark mode.
+///
+/// # Errors
+/// Returns an error if config parsing fails, path generation fails,
+/// or scenario execution fails.
 fn main() -> Result<(), Box<dyn Error>> {
     let config = parse_config()?;
     let path = GenPath::from_closest_match("database")?;
