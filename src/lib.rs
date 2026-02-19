@@ -3,7 +3,6 @@
 
 use std::{collections::HashMap, env::{current_dir, current_exe}, ffi::OsStr, fs::{self, File, create_dir, remove_dir, remove_dir_all, remove_file}, hash::Hash, io::{self, Write}, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
 use thiserror::Error;
-use fs_more::{self, directory::{BrokenSymlinkBehaviour, CollidingSubDirectoryBehaviour, DestinationDirectoryRule, DirectoryMoveAllowedStrategies, DirectoryMoveByCopyOptions, DirectoryMoveOptions, SymlinkBehaviour, move_directory}, error::MoveDirectoryError, file::CollidingFileBehaviour};
 
 // Constants
 const ZERO: u64 = 0;
@@ -29,6 +28,8 @@ pub enum DatabaseError {
     IdenticalSourceDestination(PathBuf),
     #[error("Export destination is inside the database: '{0}'")]
     ExportDestinationInsideDatabase(PathBuf),
+    #[error("Import source is inside the database: '{0}'")]
+    ImportSourceInsideDatabase(PathBuf),
     #[error("Index {index} out of bounds for ID '{id}' (len: {len})")]
     IndexOutOfBounds {
         id: String,
@@ -49,8 +50,6 @@ pub enum DatabaseError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     PathBufConversion(#[from] std::path::StripPrefixError),
-    #[error(transparent)]
-    MigrationError(#[from] MoveDirectoryError)
 }
 
 #[derive(Debug, PartialEq, Clone, Default)]
@@ -858,23 +857,20 @@ impl DatabaseManager {
     /// Migrate the database to a different directory overwriting any collisions
     pub fn migrate_database(&mut self, to: impl AsRef<Path>) -> Result<(), DatabaseError> {
         let destination = to.as_ref().to_path_buf();
+        let name = self
+            .path
+            .file_name()
+            .ok_or_else(|| DatabaseError::NotADirectory(self.path.clone()))?;
+        let destination_database_path = destination.join(name);
 
-        let move_options = DirectoryMoveOptions {
-            destination_directory_rule: DestinationDirectoryRule::AllowNonEmpty {
-                colliding_file_behaviour: CollidingFileBehaviour::Overwrite,
-                colliding_subdirectory_behaviour: CollidingSubDirectoryBehaviour::Continue
-            },
-            allowed_strategies: DirectoryMoveAllowedStrategies::OnlyCopyAndDelete {
-                options: DirectoryMoveByCopyOptions {
-                    symlink_behaviour: SymlinkBehaviour::Keep,
-                    broken_symlink_behaviour: BrokenSymlinkBehaviour::Keep
-                }
-            }
-        };
+        if destination_database_path.exists() {
+            remove_dir_all(&destination_database_path)?;
+        }
 
-        move_directory(&self.path, &destination, move_options)?;
+        copy_directory_recursive(&self.path, &destination_database_path)?;
+        remove_dir_all(&self.path)?;
         
-        self.path = destination;
+        self.path = destination_database_path;
 
         Ok(())
     }
@@ -1040,6 +1036,72 @@ impl DatabaseManager {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    /// Import an external file or folder into a directory in the database.
+    ///
+    /// - `from` is a path to an item outside this database.
+    /// - `to` is the destination parent directory `ItemId` in the database.
+    /// - Errors if an item with the same name already exists in `to`.
+    pub fn import_item(
+        &mut self,
+        from: impl AsRef<Path>,
+        to: impl Into<ItemId>,
+    ) -> Result<(), DatabaseError> {
+        let source_path = {
+            let from = from.as_ref();
+            if from.is_absolute() {
+                from.to_path_buf()
+            } else {
+                current_dir()?.join(from)
+            }
+        };
+        let to = to.into();
+
+        if source_path.starts_with(&self.path) {
+            return Err(DatabaseError::ImportSourceInsideDatabase(source_path));
+        }
+
+        let destination_parent = self.locate_absolute(&to)?;
+        if !destination_parent.is_dir() {
+            return Err(DatabaseError::NotADirectory(destination_parent));
+        }
+
+        let item_name = source_path
+            .file_name()
+            .ok_or_else(|| DatabaseError::NotAFile(source_path.clone()))?
+            .to_string_lossy()
+            .to_string();
+
+        let destination_absolute = destination_parent.join(&item_name);
+        let destination_relative = if to.get_name().is_empty() {
+            PathBuf::from(&item_name)
+        } else {
+            let mut relative = self.locate_relative(&to)?.to_path_buf();
+            relative.push(&item_name);
+            relative
+        };
+
+        if destination_absolute.exists()
+            || self
+                .items
+                .get(&item_name)
+                .is_some_and(|paths| paths.iter().any(|path| path == &destination_relative))
+        {
+            return Err(DatabaseError::IdAlreadyExists(item_name));
+        }
+
+        if source_path.is_dir() {
+            copy_directory_recursive(&source_path, &destination_absolute)?;
+        } else if source_path.is_file() {
+            fs::copy(&source_path, &destination_absolute)?;
+        } else {
+            return Err(DatabaseError::NoMatchingID(source_path.display().to_string()));
+        }
+
+        self.items.entry(item_name).or_default().push(destination_relative);
 
         Ok(())
     }
