@@ -647,7 +647,7 @@ impl DatabaseManager {
 
         Ok(())
     }
-
+    
     pub fn overwrite_existing_json<T: serde::Serialize>(
         &self,
         id: impl Into<ItemId>,
@@ -656,7 +656,7 @@ impl DatabaseManager {
         let data = serde_json::to_vec(value)?;
         self.overwrite_existing(id, data)
     }
-
+    
     pub fn overwrite_existing_binary<T: serde::Serialize>(
         &self,
         id: impl Into<ItemId>,
@@ -665,7 +665,7 @@ impl DatabaseManager {
         let data = bincode::serialize(value)?;
         self.overwrite_existing(id, data)
     }
-
+    
     pub fn overwrite_existing_from_reader<R: io::Read>(
         &self,
         id: impl Into<ItemId>,
@@ -674,6 +674,36 @@ impl DatabaseManager {
         let id = id.into();
         let path = self.locate_absolute(id)?;
         self.overwrite_path_atomic_with(&path, |file| Ok(io::copy(reader, file)?))
+    }
+    
+    /// Read an existing file and return its raw bytes
+    pub fn read_existing(&self, id: impl Into<ItemId>) -> Result<Vec<u8>, DatabaseError> {
+        let id = id.into();
+        let path = self.locate_absolute(id)?;
+
+        if path.is_dir() {
+            return Err(DatabaseError::NotAFile(path));
+        }
+
+        Ok(fs::read(path)?)
+    }
+
+    /// Read an existing file as JSON and deserialize to `T`
+    pub fn read_existing_json<T: serde::de::DeserializeOwned>(
+        &self,
+        id: impl Into<ItemId>,
+    ) -> Result<T, DatabaseError> {
+        let bytes = self.read_existing(id)?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    /// Read an existing file as bincode and deserialize to `T`
+    pub fn read_existing_binary<T: serde::de::DeserializeOwned>(
+        &self,
+        id: impl Into<ItemId>,
+    ) -> Result<T, DatabaseError> {
+        let bytes = self.read_existing(id)?;
+        Ok(bincode::deserialize(&bytes)?)
     }
 
     /// Returns all existing `ItemId` as a `Vec<ItemId>`
