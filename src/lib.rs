@@ -27,6 +27,8 @@ pub enum DatabaseError {
     IdAlreadyExists(String),
     #[error("Source and destination are identical: '{0}'")]
     IdenticalSourceDestination(PathBuf),
+    #[error("Export destination is inside the database: '{0}'")]
+    ExportDestinationInsideDatabase(PathBuf),
     #[error("Index {index} out of bounds for ID '{id}' (len: {len})")]
     IndexOutOfBounds {
         id: String,
@@ -956,10 +958,21 @@ impl DatabaseManager {
         mode: ExportMode,
     ) -> Result<(), DatabaseError> {
         let id = id.into();
-        let destination_dir = to.as_ref().to_path_buf();
+        let destination_dir = {
+            let to = to.as_ref();
+            if to.is_absolute() {
+                to.to_path_buf()
+            } else {
+                current_dir()?.join(to)
+            }
+        };
 
         if id.get_name().is_empty() {
             return Err(DatabaseError::RootIdUnsupported);
+        }
+
+        if destination_dir.starts_with(&self.path) {
+            return Err(DatabaseError::ExportDestinationInsideDatabase(destination_dir));
         }
 
         fs::create_dir_all(&destination_dir)?;
