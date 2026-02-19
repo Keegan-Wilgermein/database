@@ -6,9 +6,8 @@ description = "A local filesystem database with ID based file and directory mana
 license = "MIT"
 readme = "readme.md"
 documentation = "https://docs.rs/file_database"
-keywords = ["filesystem", "database", "files", "paths", "index", "manager"]
+keywords = ["filesystem", "database", "files", "paths", "manager"]
 include = ["src/**/*", "Cargo.toml", "Cargo.lock", "readme.md"]
-exclude = ["target/**", ".DS_Store"]
 
 [dependencies]
 fs-more = "0.8.1"
