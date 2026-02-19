@@ -10,7 +10,7 @@ It manages one root directory and keeps an in-memory index so you can target ite
 - It gives you a simple ID-based way to track items instead of passing raw paths around.
 - It hides low-level filesystem bookkeeping behind a single API, so day-to-day usage stays straightforward.
 
-## Core idea: `ItemId`
+## `ItemId`
 
 An `ItemId` has two parts:
 
@@ -48,7 +48,7 @@ fn main() -> Result<(), DatabaseError> {
 }
 ```
 
-## Main API surface
+## Basics
 
 ### Create and organize
 
