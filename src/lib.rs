@@ -380,28 +380,28 @@ pub struct FileInformation {
 }
 
 impl FileInformation {
-    pub fn get_name(&self) -> Option<String> {
-        self.name.clone()
+    pub fn get_name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
-    pub fn get_extension(&self) -> Option<String> {
-        self.extension.clone()
+    pub fn get_extension(&self) -> Option<&str> {
+        self.extension.as_deref()
     }
 
-    pub fn get_size(&self) -> FileSize {
-        self.size.clone()
+    pub fn get_size(&self) -> &FileSize {
+        &self.size
     }
 
-    pub fn get_created(&self) -> Option<u64> {
-        self.created.clone()
+    pub fn get_created(&self) -> Option<&u64> {
+        self.created.as_ref()
     }
 
-    pub fn get_opened(&self) -> Option<u64> {
-        self.last_opened.clone()
+    pub fn get_opened(&self) -> Option<&u64> {
+        self.last_opened.as_ref()
     }
 
-    pub fn get_modified(&self) -> Option<u64> {
-        self.last_modified.clone()
+    pub fn get_modified(&self) -> Option<&u64> {
+        self.last_modified.as_ref()
     }
 }
 
@@ -465,21 +465,15 @@ impl DatabaseManager {
             return Err(DatabaseError::IdAlreadyExists(id.as_string()));
         }
 
-        let absolute_parent_path = self.locate_absolute(parent.clone())?;
-        let relative_parent_path = self.locate_relative(parent)?;
-        let mut absolute_path: PathBuf;
-        let mut relative_path: PathBuf;
-
-        // If parent isn't root
-        if absolute_parent_path != self.locate_absolute(ItemId::database_id())? {
-            relative_path = relative_parent_path;
-            relative_path.push(&id.0);
+        let absolute_parent_path = self.locate_absolute(&parent)?;
+        let relative_path = if parent.0.is_empty() {
+            PathBuf::from(&id.0)
         } else {
-            relative_path = PathBuf::from(&id.0);
-        }
-
-        absolute_path = absolute_parent_path;
-        absolute_path.push(&id.0);
+            let mut path = self.locate_relative(parent)?.to_path_buf();
+            path.push(&id.0);
+            path
+        };
+        let absolute_path = absolute_parent_path.join(&id.0);
 
         if relative_path.extension().is_none() {
             create_dir(&absolute_path)?;
@@ -528,11 +522,11 @@ impl DatabaseManager {
     //     Ok(deserialized_data)
     // }
 
-    /// Returns all existing `ItemId` as a `Vec<ItemId>`
-    pub fn get_all(&self, sorted: impl Into<bool>) -> Vec<ItemId> {
+    /// Returns all existing `ItemId` as a `Vec<&ItemId>`
+    pub fn get_all(&self, sorted: impl Into<bool>) -> Vec<&ItemId> {
         let sorted = sorted.into();
 
-        let mut list: Vec<ItemId> = self.items.keys().map(|key| key.to_owned()).collect();
+        let mut list: Vec<&ItemId> = self.items.keys().collect();
 
         if sorted {
             list.sort();
@@ -544,30 +538,30 @@ impl DatabaseManager {
     /// Returns all `ItemId` that belong to a certain parent
     /// 
     /// Empty strings are returned if there is an error reading the item
-    pub fn get_by_parent(&self, parent: impl Into<ItemId>, sorted: impl Into<bool>) -> Result<Vec<ItemId>, DatabaseError> {
+    pub fn get_by_parent(&self, parent: impl Into<ItemId>, sorted: impl Into<bool>) -> Result<Vec<&ItemId>, DatabaseError> {
         let parent = parent.into();
+        let sorted = sorted.into();
 
-        let path = self.locate_absolute(parent)?;
+        let path = self.locate_absolute(&parent)?;
 
         if !path.is_dir() {
             return Err(DatabaseError::NotADirectory(path))
         }
 
-        let mut list: Vec<ItemId> = path.read_dir()?.map(|directory|{
-            match directory {
-                Ok(path) => {
-                    let path_name_as_string = match path.file_name().into_string() {
-                        Ok(string) => string,
-                        Err(_) => String::new(),
-                    };
+        let mut list: Vec<&ItemId> = if parent.0.is_empty() {
+            self.items
+                .iter()
+                .filter_map(|(id, item_path)| item_path.parent().is_none().then_some(id))
+                .collect()
+        } else {
+            let parent_path = self.locate_relative(parent)?;
+            self.items
+                .iter()
+                .filter_map(|(id, item_path)| (item_path.parent() == Some(parent_path.as_path())).then_some(id))
+                .collect()
+        };
 
-                    path_name_as_string.into()
-                },
-                Err(_) => ItemId::database_id(),
-            }
-        }).collect();
-
-        if sorted.into() {
+        if sorted {
             list.sort();
         }
 
@@ -576,25 +570,29 @@ impl DatabaseManager {
 
     pub fn get_parent(&self, id: impl Into<ItemId>) -> Result<ItemId, DatabaseError> {
         let id = id.into();
-        let path = self.locate_absolute(id.clone())?;
+        let path = self.locate_relative(&id)?;
 
         let parent = match path.parent() {
-            Some(parent) => {
-                let string = os_str_to_string(parent.file_name())?;
-                ItemId::id(string)
-            },
-            None => return Err(DatabaseError::NoParent(id.0)),
+            Some(parent) => parent,
+            None => return Ok(ItemId::database_id()),
         };
 
-        Ok(parent)
+        if parent.as_os_str().is_empty() {
+            return Ok(ItemId::database_id());
+        }
+
+        match parent.file_name() {
+            Some(name) => Ok(ItemId::id(os_str_to_string(Some(name))?)),
+            None => Err(DatabaseError::NoParent(id.0)),
+        }
     }
 
     pub fn rename(&mut self, id: impl Into<ItemId>, to: impl AsRef<str>) -> Result<(), DatabaseError> {
         let id = id.into();
         let name = to.as_ref().to_owned();
 
-        let path = self.locate_absolute(id.clone())?;
-        let mut relative_path = self.locate_relative(id.clone())?;
+        let path = self.locate_absolute(&id)?;
+        let mut relative_path = self.locate_relative(&id)?.to_path_buf();
         
         match self.items.remove_entry(&id) {
             Some(_) => (),
@@ -604,16 +602,17 @@ impl DatabaseManager {
         relative_path = match relative_path.pop() {
             true => {
                 relative_path.push(&name);
-                PathBuf::from(relative_path)
+                relative_path
             },
             false => {
                 PathBuf::from(&name)
             }
         };
         
-        self.items.insert(ItemId::id(name.clone()), relative_path);
+        self.items.insert(ItemId::id(&name), relative_path);
 
-        fs::rename(&path, self.locate_absolute(name)?)?;
+        let renamed_path = path.with_file_name(&name);
+        fs::rename(&path, renamed_path)?;
 
         Ok(())
     }
@@ -635,7 +634,7 @@ impl DatabaseManager {
             }
         }
 
-        let path = self.locate_absolute(id.clone())?;
+        let path = self.locate_absolute(&id)?;
 
         self.items.remove(&id);
 
@@ -652,19 +651,13 @@ impl DatabaseManager {
     /// Locate the database by id and return an absolute path
     pub fn locate_absolute(&self, id: impl Into<ItemId>) -> Result<PathBuf, DatabaseError> {
         let id = id.into();
-
-        let database_path = self.path.clone();
-
+        
         if id.0.is_empty() {
-            return Ok(database_path);
+            return Ok(self.path.to_path_buf());
         }
 
-        let location = self.items.get(&id);
-
-        if let Some(path) = location {
-            let mut absolute_path = database_path;
-            absolute_path.push(path);
-            Ok(absolute_path)
+        if let Some(path) = self.items.get(&id) {
+            Ok(self.path.join(path))
         } else {
             Err(DatabaseError::NoMatchingID(id.as_string()))
         }
@@ -673,19 +666,14 @@ impl DatabaseManager {
     /// Locate the database by id and return a relative path
     /// 
     /// An absolute path will be output if `id` matches the database ID
-    pub fn locate_relative(&self, id: impl Into<ItemId>) -> Result<PathBuf, DatabaseError> {
+    pub fn locate_relative(&self, id: impl Into<ItemId>) -> Result<&PathBuf, DatabaseError> {
         let id = id.into();
-
-        let database_path = self.path.clone();
-
         if id.0.is_empty() {
-            return Ok(database_path);
+            return Ok(&self.path);
         }
 
-        let location = self.items.get(&id);
-
-        if let Some(path) = location {
-            Ok(path.to_path_buf())
+        if let Some(path) = self.items.get(&id) {
+            Ok(path)
         } else {
             Err(DatabaseError::NoMatchingID(id.as_string()))
         }
