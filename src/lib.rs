@@ -1,7 +1,7 @@
 //! # Database
 //! `Database` is a file management system designed to make reading and writing to a local database easier
 
-use std::{collections::HashMap, env::{current_dir, current_exe}, ffi::OsStr, fs::{self, File, create_dir, remove_dir, remove_dir_all, remove_file}, hash::Hash, io::{self, Write}, path::{Path, PathBuf}, time::SystemTime};
+use std::{collections::HashMap, env::{current_dir, current_exe}, ffi::OsStr, fs::{self, File, create_dir, remove_dir, remove_dir_all, remove_file}, hash::Hash, io::{self, Write}, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
 use thiserror::Error;
 use fs_more::{self, directory::{BrokenSymlinkBehaviour, CollidingSubDirectoryBehaviour, DestinationDirectoryRule, DirectoryMoveAllowedStrategies, DirectoryMoveByCopyOptions, DirectoryMoveOptions, SymlinkBehaviour, move_directory}, error::MoveDirectoryError, file::CollidingFileBehaviour};
 
@@ -374,9 +374,12 @@ pub struct FileInformation {
     name: Option<String>,
     extension: Option<String>,
     size: FileSize,
-    created: Option<u64>,
-    last_opened: Option<u64>,
-    last_modified: Option<u64>,
+    unix_created: Option<u64>,
+    time_since_created: Option<u64>,
+    unix_last_opened: Option<u64>,
+    time_since_last_opened: Option<u64>,
+    unix_last_modified: Option<u64>,
+    time_since_last_modified: Option<u64>,
 }
 
 impl FileInformation {
@@ -392,16 +395,28 @@ impl FileInformation {
         &self.size
     }
 
-    pub fn get_created(&self) -> Option<&u64> {
-        self.created.as_ref()
+    pub fn get_unix_created(&self) -> Option<&u64> {
+        self.unix_created.as_ref()
     }
 
-    pub fn get_opened(&self) -> Option<&u64> {
-        self.last_opened.as_ref()
+    pub fn get_time_since_created(&self) -> Option<&u64> {
+        self.time_since_created.as_ref()
     }
 
-    pub fn get_modified(&self) -> Option<&u64> {
-        self.last_modified.as_ref()
+    pub fn get_unix_last_opened(&self) -> Option<&u64> {
+        self.unix_last_opened.as_ref()
+    }
+
+    pub fn get_time_since_last_opened(&self) -> Option<&u64> {
+        self.time_since_last_opened.as_ref()
+    }
+
+    pub fn get_unix_last_modified(&self) -> Option<&u64> {
+        self.unix_last_modified.as_ref()
+    }
+
+    pub fn get_time_since_last_modified(&self) -> Option<&u64> {
+        self.time_since_last_modified.as_ref()
     }
 }
 
@@ -737,19 +752,25 @@ impl DatabaseManager {
 
         let size = FileSize::from(metadata.len());
 
-        let created = sys_time_to_unsigned_int(metadata.created());
+        let unix_created = sys_time_to_unsigned_int(metadata.created());
+        let time_since_created = sys_time_to_time_since(metadata.created());
 
-        let last_opened = sys_time_to_unsigned_int(metadata.accessed());
+        let unix_last_opened = sys_time_to_unsigned_int(metadata.accessed());
+        let time_since_last_opened = sys_time_to_time_since(metadata.accessed());
 
-        let last_modified = sys_time_to_unsigned_int(metadata.modified());
+        let unix_last_modified = sys_time_to_unsigned_int(metadata.modified());
+        let time_since_last_modified = sys_time_to_time_since(metadata.modified());
     
         Ok(FileInformation {
             name,
             extension,
             size,
-            created,
-            last_opened,
-            last_modified,
+            unix_created,
+            time_since_created,
+            unix_last_opened,
+            time_since_last_opened,
+            unix_last_modified,
+            time_since_last_modified,
         })
     }
 }
@@ -785,13 +806,25 @@ fn os_str_to_string(os_str: Option<&OsStr>) -> Result<String, DatabaseError> {
 fn sys_time_to_unsigned_int(time: io::Result<SystemTime>) -> Option<u64> {
     match time {
         Ok(time) => {
-            match time.elapsed() {
+            match time.duration_since(UNIX_EPOCH) {
                 Ok(duration) => Some(duration.as_secs()),
                 Err(_) => None,
             }
         },
         Err(_) => None,
     }
+}
+
+fn sys_time_to_time_since(time: io::Result<SystemTime>) -> Option<u64> {
+    let duration = match time {
+        Ok(time) => match SystemTime::now().duration_since(time) {
+            Ok(duration) => duration,
+            Err(_) => return None,
+        },
+        Err(_) => return None,
+    };
+
+    sys_time_to_unsigned_int(Ok(UNIX_EPOCH + duration))
 }
 
 /// Deletes the passed directory
