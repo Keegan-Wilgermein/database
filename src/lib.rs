@@ -1,7 +1,7 @@
 //! # Database
 //! `Database` is a file management system designed to make reading and writing to a local database easier
 
-use std::{collections::HashMap, env::{current_dir, current_exe}, ffi::OsStr, fs::{self, File, create_dir, remove_dir, remove_dir_all, remove_file}, hash::Hash, io::{self, Write}, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
+use std::{collections::{HashMap, HashSet}, env::{current_dir, current_exe}, ffi::OsStr, fs::{self, File, create_dir, remove_dir, remove_dir_all, remove_file}, hash::Hash, io::{self, Write}, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
 use thiserror::Error;
 
 // Constants
@@ -135,6 +135,14 @@ pub enum ExportMode {
     #[default]
     Copy,
     Move,
+}
+
+#[derive(Debug, PartialEq, Clone, Default)]
+pub enum ScanPolicy {
+    DetectOnly,
+    RemoveNew,
+    #[default]
+    AddNew,
 }
 
 #[derive(Debug, Default, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
@@ -485,6 +493,44 @@ impl FileInformation {
 
     pub fn get_time_since_last_modified(&self) -> Option<&u64> {
         self.time_since_last_modified.as_ref()
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum ExternalChange {
+    Added { id: ItemId, path: PathBuf },
+    Removed { id: ItemId, path: PathBuf },
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct ScanReport {
+    scanned_from: ItemId,
+    recursive: bool,
+    added: Vec<ExternalChange>,
+    removed: Vec<ExternalChange>,
+    unchanged_count: usize,
+    total_changed_count: usize,
+}
+
+impl ScanReport {
+    pub fn get_scan_from(&self) -> &ItemId {
+        &self.scanned_from
+    }
+
+    pub fn get_added(&self) -> &Vec<ExternalChange> {
+        &self.added
+    }
+
+    pub fn get_removed(&self) -> &Vec<ExternalChange> {
+        &self.removed
+    }
+
+    pub fn get_unchanged_count(&self) -> usize {
+        self.unchanged_count
+    }
+
+    pub fn get_total_changed_count(&self) -> usize {
+        self.total_changed_count
     }
 }
 
@@ -852,6 +898,128 @@ impl DatabaseManager {
             .collect();
 
         Ok(ids)
+    }
+
+    pub fn scan_for_changes(
+        &mut self,
+        scan_from: impl Into<ItemId>,
+        policy: ScanPolicy,
+        recursive: bool,
+    ) -> Result<ScanReport, DatabaseError> {
+        let scan_from = scan_from.into();
+        let scan_from_absolute = self.locate_absolute(&scan_from)?;
+        if !scan_from_absolute.is_dir() {
+            return Err(DatabaseError::NotADirectory(scan_from_absolute));
+        }
+
+        let scope_relative = if scan_from.get_name().is_empty() {
+            None
+        } else {
+            Some(self.locate_relative(&scan_from)?.clone())
+        };
+
+        let discovered_paths = self.collect_paths_in_scope(&scan_from_absolute, recursive)?;
+        let discovered_set: HashSet<PathBuf> = discovered_paths.iter().cloned().collect();
+
+        let mut existing_in_scope_set = HashSet::new();
+        let mut removed = Vec::new();
+        let mut unchanged_count = 0usize;
+
+        for (name, paths) in &self.items {
+            for (index, path) in paths.iter().enumerate() {
+                if !is_path_in_scope(path, scope_relative.as_deref(), recursive) {
+                    continue;
+                }
+
+                existing_in_scope_set.insert(path.clone());
+
+                if discovered_set.contains(path) {
+                    unchanged_count += 1;
+                } else {
+                    removed.push(ExternalChange::Removed {
+                        id: ItemId::with_index(name.clone(), index),
+                        path: path.clone(),
+                    });
+                }
+            }
+        }
+
+        let mut added_paths: Vec<PathBuf> = discovered_paths
+            .into_iter()
+            .filter(|path| !existing_in_scope_set.contains(path))
+            .collect();
+
+        let mut added = Vec::new();
+        let mut add_offsets: HashMap<String, usize> = HashMap::new();
+        for path in &added_paths {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(DatabaseError::OsStringConversion)?
+                .to_string();
+            let base_len = self.items.get(&name).map(|paths| paths.len()).unwrap_or(0);
+            let offset = add_offsets.entry(name.clone()).or_insert(0);
+            let index = base_len + *offset;
+            *offset += 1;
+
+            added.push(ExternalChange::Added {
+                id: ItemId::with_index(name, index),
+                path: path.clone(),
+            });
+        }
+
+        let mut empty_keys = Vec::new();
+        for (name, paths) in self.items.iter_mut() {
+            paths.retain(|path| {
+                !is_path_in_scope(path, scope_relative.as_deref(), recursive) || discovered_set.contains(path)
+            });
+            if paths.is_empty() {
+                empty_keys.push(name.clone());
+            }
+        }
+        for key in empty_keys {
+            self.items.remove(&key);
+        }
+
+        match policy {
+            ScanPolicy::DetectOnly => (),
+            ScanPolicy::AddNew => {
+                for path in &added_paths {
+                    let name = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or(DatabaseError::OsStringConversion)?
+                        .to_string();
+                    self.items.entry(name).or_default().push(path.clone());
+                }
+            }
+            ScanPolicy::RemoveNew => {
+                added_paths.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+                for path in added_paths {
+                    let absolute = self.path.join(&path);
+                    if !absolute.exists() {
+                        continue;
+                    }
+
+                    if absolute.is_dir() {
+                        remove_dir_all(&absolute)?;
+                    } else if absolute.is_file() {
+                        remove_file(&absolute)?;
+                    }
+                }
+            }
+        }
+
+        let total_changed_count = added.len() + removed.len();
+
+        Ok(ScanReport {
+            scanned_from: scan_from,
+            recursive,
+            added,
+            removed,
+            unchanged_count,
+            total_changed_count,
+        })
     }
 
     /// Migrate the database to a different directory overwriting any collisions
@@ -1240,6 +1408,40 @@ impl DatabaseManager {
 
         Ok(&matches[id.get_index()])
     }
+
+    fn collect_paths_in_scope(&self, scope_absolute: &Path, recursive: bool) -> Result<Vec<PathBuf>, DatabaseError> {
+        let mut collected = Vec::new();
+
+        if recursive {
+            let mut stack = vec![scope_absolute.to_path_buf()];
+            while let Some(directory) = stack.pop() {
+                for entry in fs::read_dir(&directory)? {
+                    let entry = entry?;
+                    let absolute_path = entry.path();
+                    let relative_path = absolute_path.strip_prefix(&self.path)?.to_path_buf();
+
+                    if absolute_path.is_dir() {
+                        collected.push(relative_path);
+                        stack.push(absolute_path);
+                    } else if absolute_path.is_file() {
+                        collected.push(relative_path);
+                    }
+                }
+            }
+        } else {
+            for entry in fs::read_dir(scope_absolute)? {
+                let entry = entry?;
+                let absolute_path = entry.path();
+                let relative_path = absolute_path.strip_prefix(&self.path)?.to_path_buf();
+
+                if absolute_path.is_dir() || absolute_path.is_file() {
+                    collected.push(relative_path);
+                }
+            }
+        }
+
+        Ok(collected)
+    }
 }
 
 // -------- Functions --------
@@ -1310,6 +1512,25 @@ fn copy_directory_recursive(from: &Path, to: &Path) -> Result<(), DatabaseError>
     }
 
     Ok(())
+}
+
+fn is_path_in_scope(path: &Path, scope_relative: Option<&Path>, recursive: bool) -> bool {
+    match scope_relative {
+        None => {
+            if recursive {
+                true
+            } else {
+                path.parent().is_some_and(|parent| parent.as_os_str().is_empty())
+            }
+        }
+        Some(scope_relative) => {
+            if recursive {
+                path.starts_with(scope_relative) && path != scope_relative
+            } else {
+                path.parent() == Some(scope_relative)
+            }
+        }
+    }
 }
 
 /// Deletes the passed directory
