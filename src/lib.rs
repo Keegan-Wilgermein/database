@@ -129,6 +129,13 @@ impl From<bool> for Serialize {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Default)]
+pub enum ExportMode {
+    #[default]
+    Copy,
+    Move,
+}
+
 #[derive(Debug, Default, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
 pub enum FileSizeUnit {
     #[default]
@@ -938,6 +945,92 @@ impl DatabaseManager {
         Ok(())
     }
 
+    /// Export a file or folder to an external directory.
+    ///
+    /// - `ExportMode::Copy` keeps the item in the database.
+    /// - `ExportMode::Move` removes the item from the database after transfer.
+    pub fn export_item(
+        &mut self,
+        id: impl Into<ItemId>,
+        to: impl AsRef<Path>,
+        mode: ExportMode,
+    ) -> Result<(), DatabaseError> {
+        let id = id.into();
+        let destination_dir = to.as_ref().to_path_buf();
+
+        if id.get_name().is_empty() {
+            return Err(DatabaseError::RootIdUnsupported);
+        }
+
+        fs::create_dir_all(&destination_dir)?;
+        if !destination_dir.is_dir() {
+            return Err(DatabaseError::NotADirectory(destination_dir));
+        }
+
+        let source_absolute = self.locate_absolute(&id)?;
+        let source_name = source_absolute
+            .file_name()
+            .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))?;
+        let destination_absolute = destination_dir.join(source_name);
+
+        if destination_absolute == source_absolute {
+            return Err(DatabaseError::IdenticalSourceDestination(destination_absolute));
+        }
+
+        if destination_absolute.exists() {
+            if destination_absolute.is_dir() {
+                remove_dir_all(&destination_absolute)?;
+            } else {
+                remove_file(&destination_absolute)?;
+            }
+        }
+
+        match mode {
+            ExportMode::Copy => {
+                if source_absolute.is_dir() {
+                    copy_directory_recursive(&source_absolute, &destination_absolute)?;
+                } else {
+                    fs::copy(&source_absolute, &destination_absolute)?;
+                }
+            }
+            ExportMode::Move => {
+                match fs::rename(&source_absolute, &destination_absolute) {
+                    Ok(_) => (),
+                    Err(_) => {
+                        if source_absolute.is_dir() {
+                            copy_directory_recursive(&source_absolute, &destination_absolute)?;
+                            remove_dir_all(&source_absolute)?;
+                        } else {
+                            fs::copy(&source_absolute, &destination_absolute)?;
+                            remove_file(&source_absolute)?;
+                        }
+                    }
+                }
+
+                let key = id.get_name().to_string();
+                let paths = self
+                    .items
+                    .get_mut(&key)
+                    .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))?;
+
+                if id.get_index() >= paths.len() {
+                    return Err(DatabaseError::IndexOutOfBounds {
+                        id: id.as_string(),
+                        index: id.get_index(),
+                        len: paths.len(),
+                    });
+                }
+
+                paths.remove(id.get_index());
+                if paths.is_empty() {
+                    self.items.remove(&key);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Returns the information about a folder or file
     pub fn get_file_information(&self, id: impl Into<ItemId>) -> Result<FileInformation, DatabaseError> {
         let id = id.into();
@@ -1062,6 +1155,24 @@ fn sys_time_to_time_since(time: io::Result<SystemTime>) -> Option<u64> {
     };
 
     sys_time_to_unsigned_int(Ok(UNIX_EPOCH + duration))
+}
+
+fn copy_directory_recursive(from: &Path, to: &Path) -> Result<(), DatabaseError> {
+    fs::create_dir_all(to)?;
+
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = to.join(entry.file_name());
+
+        if source_path.is_dir() {
+            copy_directory_recursive(&source_path, &destination_path)?;
+        } else {
+            fs::copy(&source_path, &destination_path)?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Deletes the passed directory
