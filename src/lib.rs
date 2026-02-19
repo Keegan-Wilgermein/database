@@ -1044,6 +1044,68 @@ impl DatabaseManager {
         Ok(())
     }
 
+    /// Duplicate a file or folder to a target parent directory in the database with a new name.
+    ///
+    /// Rules:
+    /// - `id` is the source item to duplicate.
+    /// - `parent` is the destination parent and must be a directory (or database root).
+    /// - `name` is required and used as the duplicated item's name.
+    /// - Errors if an item with `name` already exists in `parent`.
+    pub fn duplicate_item(
+        &mut self,
+        id: impl Into<ItemId>,
+        parent: impl Into<ItemId>,
+        name: impl AsRef<str>,
+    ) -> Result<(), DatabaseError> {
+        let id = id.into();
+        let parent = parent.into();
+        let name = name.as_ref().to_owned();
+
+        if id.get_name().is_empty() {
+            return Err(DatabaseError::RootIdUnsupported);
+        }
+
+        let source_absolute = self.locate_absolute(&id)?;
+        let parent_absolute = self.locate_absolute(&parent)?;
+        if !parent_absolute.is_dir() {
+            return Err(DatabaseError::NotADirectory(parent_absolute));
+        }
+
+        let destination_absolute = parent_absolute.join(&name);
+        let destination_relative = if parent.get_name().is_empty() {
+            PathBuf::from(&name)
+        } else {
+            let mut path = self.locate_relative(&parent)?.to_path_buf();
+            path.push(&name);
+            path
+        };
+
+        if destination_absolute.exists()
+            || self
+                .items
+                .get(&name)
+                .is_some_and(|paths| paths.iter().any(|path| path == &destination_relative))
+        {
+            return Err(DatabaseError::IdAlreadyExists(name));
+        }
+
+        if source_absolute.is_dir() {
+            copy_directory_recursive(&source_absolute, &destination_absolute)?;
+        } else {
+            fs::copy(&source_absolute, &destination_absolute)?;
+        }
+
+        self.items
+            .entry(destination_relative
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default())
+            .or_default()
+            .push(destination_relative);
+
+        Ok(())
+    }
+
     /// Returns the information about a folder or file
     pub fn get_file_information(&self, id: impl Into<ItemId>) -> Result<FileInformation, DatabaseError> {
         let id = id.into();
