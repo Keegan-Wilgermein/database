@@ -15,7 +15,7 @@
 //!
 //! # Example: Build `ItemId` values
 //! ```
-//! use database::ItemId;
+//! use file_database::ItemId;
 //!
 //! let first = ItemId::id("test_file.txt");
 //! let second = ItemId::with_index("test_file.txt", 1);
@@ -38,7 +38,7 @@
 //!
 //! # Example: Build base paths with `GenPath`
 //! ```no_run
-//! use database::{DatabaseError, GenPath};
+//! use file_database::{DatabaseError, GenPath};
 //!
 //! fn main() -> Result<(), DatabaseError> {
 //!     let from_cwd = GenPath::from_working_dir(0)?;
@@ -51,7 +51,7 @@
 //!
 //! # Example: Find a folder by name with `GenPath`
 //! ```no_run
-//! use database::{DatabaseError, GenPath};
+//! use file_database::{DatabaseError, GenPath};
 //!
 //! fn main() -> Result<(), DatabaseError> {
 //!     let project_root = GenPath::from_closest_match("src")?;
@@ -62,7 +62,7 @@
 //!
 //! # Example: Create and overwrite a file
 //! ```no_run
-//! use database::{DatabaseError, DatabaseManager, ItemId};
+//! use file_database::{DatabaseError, DatabaseManager, ItemId};
 //!
 //! fn main() -> Result<(), DatabaseError> {
 //!     let mut manager = DatabaseManager::new(".", "database")?;
@@ -74,7 +74,7 @@
 //!
 //! # Example: Duplicate names with indexes
 //! ```no_run
-//! use database::{DatabaseError, DatabaseManager, ItemId};
+//! use file_database::{DatabaseError, DatabaseManager, ItemId};
 //!
 //! fn main() -> Result<(), DatabaseError> {
 //!     let mut manager = DatabaseManager::new(".", "database")?;
@@ -97,7 +97,7 @@
 //!
 //! # Example: Get all IDs for one shared name
 //! ```no_run
-//! use database::{DatabaseError, DatabaseManager, ItemId};
+//! use file_database::{DatabaseError, DatabaseManager, ItemId};
 //!
 //! fn main() -> Result<(), DatabaseError> {
 //!     let mut manager = DatabaseManager::new(".", "database")?;
@@ -339,7 +339,7 @@ impl GenPath {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, GenPath};
+    /// use file_database::{DatabaseError, GenPath};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let _cwd = GenPath::from_working_dir(0)?;
@@ -364,7 +364,7 @@ impl GenPath {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, GenPath};
+    /// use file_database::{DatabaseError, GenPath};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let _exe_dir = GenPath::from_exe(0)?;
@@ -395,7 +395,7 @@ impl GenPath {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, GenPath};
+    /// use file_database::{DatabaseError, GenPath};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let _path = GenPath::from_closest_match("src")?;
@@ -458,7 +458,7 @@ impl GenPath {
 ///
 /// # Examples
 /// ```
-/// use database::ItemId;
+/// use file_database::ItemId;
 ///
 /// let first = ItemId::id("report.txt");
 /// let second = ItemId::with_index("report.txt", 1);
@@ -499,7 +499,7 @@ impl ItemId {
     ///
     /// # Examples
     /// ```
-    /// use database::ItemId;
+    /// use file_database::ItemId;
     ///
     /// let root = ItemId::database_id();
     /// assert_eq!(root.get_name(), "");
@@ -519,7 +519,7 @@ impl ItemId {
     ///
     /// # Examples
     /// ```
-    /// use database::ItemId;
+    /// use file_database::ItemId;
     ///
     /// let id = ItemId::id("file.txt");
     /// assert_eq!(id.get_name(), "file.txt");
@@ -540,7 +540,7 @@ impl ItemId {
     ///
     /// # Examples
     /// ```
-    /// use database::ItemId;
+    /// use file_database::ItemId;
     ///
     /// let id = ItemId::with_index("file.txt", 2);
     /// assert_eq!(id.get_name(), "file.txt");
@@ -596,7 +596,7 @@ impl FileSize {
     ///
     /// # Examples
     /// ```
-    /// use database::FileSize;
+    /// use file_database::FileSize;
     ///
     /// let size = FileSize::default();
     /// assert_eq!(size.unit_as_string(), "Bytes");
@@ -631,7 +631,7 @@ impl FileSize {
     ///
     /// # Examples
     /// ```
-    /// use database::{FileSize, FileSizeUnit};
+    /// use file_database::{FileSize, FileSizeUnit};
     ///
     /// let bytes = FileSize::default().as_unit(FileSizeUnit::Byte);
     /// assert_eq!(bytes.get_unit(), FileSizeUnit::Byte);
@@ -795,7 +795,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager};
+    /// use file_database::{DatabaseError, DatabaseManager};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let _manager = DatabaseManager::new(".", "database")?;
@@ -836,7 +836,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -903,7 +903,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -942,7 +942,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     /// use serde::Serialize;
     ///
     /// #[derive(Serialize)]
@@ -979,7 +979,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     /// use serde::Serialize;
     ///
     /// #[derive(Serialize)]
@@ -1020,7 +1020,7 @@ impl DatabaseManager {
     /// # Examples
     /// ```no_run
     /// use std::io::Cursor;
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -1053,7 +1053,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -1086,7 +1086,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     /// use serde::{Deserialize, Serialize};
     ///
     /// #[derive(Serialize, Deserialize)]
@@ -1122,7 +1122,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     /// use serde::{Deserialize, Serialize};
     ///
     /// #[derive(Serialize, Deserialize)]
@@ -1153,7 +1153,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -1198,7 +1198,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -1268,7 +1268,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -1313,7 +1313,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -1395,7 +1395,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ForceDeletion, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ForceDeletion, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -1466,7 +1466,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -1499,7 +1499,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -1529,7 +1529,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -1562,7 +1562,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -1611,7 +1611,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId, ScanPolicy};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId, ScanPolicy};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -1757,7 +1757,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager};
+    /// use file_database::{DatabaseError, DatabaseManager};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -1801,7 +1801,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -1902,7 +1902,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ExportMode, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ExportMode, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -2026,7 +2026,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -2117,7 +2117,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
@@ -2200,7 +2200,7 @@ impl DatabaseManager {
     ///
     /// # Examples
     /// ```no_run
-    /// use database::{DatabaseError, DatabaseManager, ItemId};
+    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;

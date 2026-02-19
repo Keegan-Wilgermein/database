@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use database::*;
+use file_database::*;
 
 const DEFAULT_RUNS: u32 = 200;
 
