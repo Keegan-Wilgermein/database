@@ -1,6 +1,6 @@
 [package]
 name = "file_database"
-version = "0.1.2"
+version = "1.0.0"
 edition = "2024"
 description = "A local filesystem database with ID based file and directory management."
 license = "MIT"
