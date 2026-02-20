@@ -27,7 +27,7 @@ This means duplicate names are allowed. `ItemId::id("name")` always means index 
 
 ```toml
 [dependencies]
-file_database = "0.1.2"
+file_database = "1.0.0"
 ```
 
 ## Quick start
@@ -65,8 +65,8 @@ fn main() -> Result<(), DatabaseError> {
 - `get_all(sorted)`
 - `get_by_parent(parent, sorted)`
 - `get_parent(id)`
-- `get_paths_for_id(id)`
-- `get_ids_from_shared_id(id)`
+- `get_ids_by_name(name)`
+- `get_ids_by_index(index)`
 
 ### Read and write file data
 
@@ -74,7 +74,7 @@ fn main() -> Result<(), DatabaseError> {
   - `overwrite_existing(id, data)`
   - `read_existing(id)`
 - JSON:
-  - `overwrite_existing_json(id, &value)`
+  - `overwrite_existing_json(id, &value, pretty)`
   - `read_existing_json::<T>(id)`
 - Binary (bincode):
   - `overwrite_existing_binary(id, &value)`
@@ -144,7 +144,6 @@ All fallible functions return `Result<_, DatabaseError>`.
 Common variants include:
 
 - `NoMatchingID`
-- `IndexOutOfBounds`
 - `NotADirectory`
 - `NotAFile`
 - `IdAlreadyExists`
@@ -155,10 +154,10 @@ Common variants include:
 
 ## Notes on indexing behavior
 
-- `index` is zero-based.
-- Vectors preserve insertion order.
-- Removing or renaming items can shift later indexes for the same `name`.
-- If you need all indexes for one shared name, call `get_ids_from_shared_id`.
+- `index` is part of `ItemId` identity.
+- Different `ItemId` values can share the same `name` and still point to different paths.
+- IDs do not drift when other entries are removed.
+- If you need all IDs for one shared name, call `get_ids_by_name`.
 
 ## License
 

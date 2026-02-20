@@ -6,12 +6,12 @@
 //!
 //! ## How `ItemId` works
 //! - **`ItemId`** has a `name` and an `index`.
-//! - `name` is the shared key (for example `"test_file.txt"`).
-//! - `index` picks which path you want when that name exists more than once.
+//! - `name` is the display/key name (for example `"test_file.txt"`).
+//! - `index` is part of identity and keeps IDs unique even when names repeat.
 //! - `ItemId::id("name")` always means index `0`.
 //! - `ItemId::database_id()` is the root ID for the database itself.
 //!
-//! This means duplicate names are allowed, and you can still target one exact item by index.
+//! This means duplicate names are allowed, and each item is still uniquely addressable.
 //!
 //! # Example: Build `ItemId` values
 //! ```
@@ -81,13 +81,11 @@
 //!
 //!     manager.write_new(ItemId::id("folder_a"), ItemId::database_id())?;
 //!     manager.write_new(ItemId::id("folder_b"), ItemId::database_id())?;
-//!     manager.write_new(ItemId::id("test.txt"), ItemId::id("folder_a"))?;
-//!     manager.write_new(ItemId::id("test.txt"), ItemId::id("folder_b"))?;
+//!     manager.write_new(ItemId::with_index("test.txt", 1), ItemId::id("folder_a"))?;
+//!     manager.write_new(ItemId::with_index("test.txt", 2), ItemId::id("folder_b"))?;
 //!
-//!     // First match for "test.txt"
-//!     let first = ItemId::id("test.txt");
-//!     // Second match for "test.txt"
-//!     let second = ItemId::with_index("test.txt", 1);
+//!     let first = ItemId::with_index("test.txt", 1);
+//!     let second = ItemId::with_index("test.txt", 2);
 //!
 //!     let _first_path = manager.locate_absolute(first)?;
 //!     let _second_path = manager.locate_absolute(second)?;
@@ -101,14 +99,14 @@
 //!
 //! fn main() -> Result<(), DatabaseError> {
 //!     let mut manager = DatabaseManager::new(".", "database")?;
-//!     manager.write_new(ItemId::id("a.txt"), ItemId::database_id())?;
+//!     manager.write_new(ItemId::with_index("a.txt", 1), ItemId::database_id())?;
 //!     manager.write_new(ItemId::id("folder"), ItemId::database_id())?;
-//!     manager.write_new(ItemId::id("a.txt"), ItemId::id("folder"))?;
+//!     manager.write_new(ItemId::with_index("a.txt", 2), ItemId::id("folder"))?;
 //!
-//!     let ids = manager.get_ids_from_shared_id(ItemId::id("a.txt"))?;
+//!     let ids = manager.get_ids_by_name("a.txt");
 //!     assert_eq!(ids.len(), 2);
-//!     assert_eq!(ids[0].get_index(), 0);
-//!     assert_eq!(ids[1].get_index(), 1);
+//!     assert!(ids.iter().any(|id| id.get_index() == 1));
+//!     assert!(ids.iter().any(|id| id.get_index() == 2));
 //!     Ok(())
 //! }
 //! ```
@@ -158,13 +156,6 @@ pub enum DatabaseError {
     /// Returned when an import source path points inside the managed database root.
     #[error("Import source is inside the database: '{0}'")]
     ImportSourceInsideDatabase(PathBuf),
-    /// Returned when the requested `index` is outside the bounds of the ID match list.
-    #[error("Index {index} out of bounds for ID '{id}' (len: {len})")]
-    IndexOutOfBounds {
-        id: String,
-        index: usize,
-        len: usize,
-    },
     /// Returned when an operation does not allow `ItemId::database_id()` as input.
     #[error("Root database ID cannot be used for this operation")]
     RootIdUnsupported,
@@ -202,10 +193,10 @@ pub enum ForceDeletion {
     NoForce,
 }
 
-impl Into<bool> for ForceDeletion {
+impl From<ForceDeletion> for bool {
     /// Converts **`ForceDeletion`** into its boolean form.
-    fn into(self) -> bool {
-        match self {
+    fn from(val: ForceDeletion) -> Self {
+        match val {
             ForceDeletion::Force => true,
             ForceDeletion::NoForce => false,
         }
@@ -230,10 +221,10 @@ pub enum ShouldSort {
     NoSort,
 }
 
-impl Into<bool> for ShouldSort {
+impl From<ShouldSort> for bool {
     /// Converts **`ShouldSort`** into its boolean form.
-    fn into(self) -> bool {
-        match self {
+    fn from(val: ShouldSort) -> Self {
+        match val {
             ShouldSort::Sort => true,
             ShouldSort::NoSort => false,
         }
@@ -258,10 +249,10 @@ pub enum Serialize {
     NoSerialize,
 }
 
-impl Into<bool> for Serialize {
+impl From<Serialize> for bool {
     /// Converts **`Serialize`** into its boolean form.
-    fn into(self) -> bool {
-        match self {
+    fn from(val: Serialize) -> Self {
+        match val {
             Serialize::Serialize => true,
             Serialize::NoSerialize => false,
         }
@@ -532,11 +523,11 @@ impl ItemId {
         }
     }
 
-    /// Creates an **`ItemId`** with an explicit shared-name `index`.
+    /// Creates an **`ItemId`** with an explicit `index`.
     ///
     /// # Parameters
     /// - `id`: shared `name` key.
-    /// - `index`: zero-based `index` within that key's stored path vector.
+    /// - `index`: caller-defined unique number used as part of identity.
     ///
     /// # Examples
     /// ```
@@ -547,6 +538,15 @@ impl ItemId {
     /// assert_eq!(id.get_index(), 2);
     /// ```
     pub fn with_index(id: impl Into<String>, index: usize) -> Self {
+        Self::from(id, index)
+    }
+
+    /// Creates an **`ItemId`** from `name` and `index`.
+    ///
+    /// # Parameters
+    /// - `id`: shared `name` key.
+    /// - `index`: caller-defined unique number used as part of identity.
+    pub fn from(id: impl Into<String>, index: usize) -> Self {
         Self {
             name: id.into(),
             index,
@@ -777,7 +777,8 @@ impl ScanReport {
 /// Main type that manages a database directory and its index.
 pub struct DatabaseManager {
     path: PathBuf,
-    items: HashMap<String, Vec<PathBuf>>,
+    items: HashMap<ItemId, PathBuf>,
+    next_index: usize,
 }
 
 impl DatabaseManager {
@@ -810,8 +811,9 @@ impl DatabaseManager {
         create_dir(&path)?;
 
         let manager = Self {
-            path: path.into(),
+            path,
             items: HashMap::new(),
+            next_index: 1,
         };
 
         Ok(manager)
@@ -856,6 +858,10 @@ impl DatabaseManager {
             return Err(DatabaseError::RootIdUnsupported);
         }
 
+        if self.items.contains_key(&id) {
+            return Err(DatabaseError::IdAlreadyExists(id.as_string()));
+        }
+
         let absolute_parent_path = self.locate_absolute(&parent)?;
         let relative_path = if parent.get_name().is_empty() {
             PathBuf::from(id.get_name())
@@ -866,11 +872,7 @@ impl DatabaseManager {
         };
         let absolute_path = absolute_parent_path.join(id.get_name());
 
-        if self
-            .items
-            .get(id.get_name())
-            .is_some_and(|paths| paths.iter().any(|path| path == &relative_path))
-        {
+        if self.items.values().any(|path| path == &relative_path) {
             return Err(DatabaseError::IdAlreadyExists(id.as_string()));
         }
 
@@ -880,10 +882,8 @@ impl DatabaseManager {
             File::create_new(&absolute_path)?;
         }
 
-        self.items
-            .entry(id.get_name().to_string())
-            .or_default()
-            .push(relative_path);
+        self.bump_next_index(id.get_index());
+        self.items.insert(id, relative_path);
         Ok(())
     }
 
@@ -934,6 +934,7 @@ impl DatabaseManager {
     /// # Parameters
     /// - `id`: target file **`ItemId`**.
     /// - `value`: serializable value.
+    /// - `pretty`: if `true`, writes pretty-printed JSON; otherwise compact JSON.
     ///
     /// # Errors
     /// Returns an error if:
@@ -953,7 +954,7 @@ impl DatabaseManager {
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
     ///     manager.write_new(ItemId::id("config.json"), ItemId::database_id())?;
-    ///     manager.overwrite_existing_json(ItemId::id("config.json"), &Config { retries: 3 })?;
+    ///     manager.overwrite_existing_json(ItemId::id("config.json"), &Config { retries: 3 }, false)?;
     ///     Ok(())
     /// }
     /// ```
@@ -961,8 +962,14 @@ impl DatabaseManager {
         &self,
         id: impl Into<ItemId>,
         value: &T,
+        pretty: impl Into<bool>,
     ) -> Result<(), DatabaseError> {
-        let data = serde_json::to_vec(value)?;
+        let pretty = pretty.into();
+        let data = if pretty {
+            serde_json::to_vec_pretty(value)?
+        } else {
+            serde_json::to_vec(value)?
+        };
         self.overwrite_existing(id, data)
     }
 
@@ -1097,7 +1104,7 @@ impl DatabaseManager {
     /// fn main() -> Result<(), DatabaseError> {
     ///     let mut manager = DatabaseManager::new(".", "database")?;
     ///     manager.write_new(ItemId::id("config.json"), ItemId::database_id())?;
-    ///     manager.overwrite_existing_json(ItemId::id("config.json"), &Config { retries: 3 })?;
+    ///     manager.overwrite_existing_json(ItemId::id("config.json"), &Config { retries: 3 }, false)?;
     ///     let _loaded: Config = manager.read_existing_json(ItemId::id("config.json"))?;
     ///     Ok(())
     /// }
@@ -1165,16 +1172,7 @@ impl DatabaseManager {
     pub fn get_all(&self, sorted: impl Into<bool>) -> Vec<ItemId> {
         let sorted = sorted.into();
 
-        let mut list: Vec<ItemId> = self
-            .items
-            .iter()
-            .flat_map(|(name, paths)| {
-                paths
-                    .iter()
-                    .enumerate()
-                    .map(|(index, _)| ItemId::with_index(name.clone(), index))
-            })
-            .collect();
+        let mut list: Vec<ItemId> = self.items.keys().cloned().collect();
 
         if sorted {
             list.sort();
@@ -1225,24 +1223,19 @@ impl DatabaseManager {
         let mut list: Vec<ItemId> = if parent.get_name().is_empty() {
             self.items
                 .iter()
-                .flat_map(|(name, paths)| {
-                    paths.iter().enumerate().filter_map(|(index, item_path)| {
-                        item_path
-                            .parent()
-                            .is_some_and(|parent| parent.as_os_str().is_empty())
-                            .then_some(ItemId::with_index(name.clone(), index))
-                    })
+                .filter_map(|(id, item_path)| {
+                    item_path
+                        .parent()
+                        .is_some_and(|parent| parent.as_os_str().is_empty())
+                        .then_some(id.clone())
                 })
                 .collect()
         } else {
             let parent_path = self.locate_relative(parent)?;
             self.items
                 .iter()
-                .flat_map(|(name, paths)| {
-                    paths.iter().enumerate().filter_map(|(index, item_path)| {
-                        (item_path.parent() == Some(parent_path.as_path()))
-                            .then_some(ItemId::with_index(name.clone(), index))
-                    })
+                .filter_map(|(id, item_path)| {
+                    (item_path.parent() == Some(parent_path.as_path())).then_some(id.clone())
                 })
                 .collect()
         };
@@ -1291,6 +1284,14 @@ impl DatabaseManager {
             return Ok(ItemId::database_id());
         }
 
+        if let Some((parent_id, _)) = self
+            .items
+            .iter()
+            .find(|(_, item_path)| item_path.as_path() == parent)
+        {
+            return Ok(parent_id.clone());
+        }
+
         match parent.file_name() {
             Some(name) => Ok(ItemId::id(os_str_to_string(Some(name))?)),
             None => Err(DatabaseError::NoParent(id.as_string())),
@@ -1307,7 +1308,6 @@ impl DatabaseManager {
     /// Returns an error if:
     /// - `id` is the `ItemId::database_id()`,
     /// - `id` cannot be found,
-    /// - `id.index` is out of range for the list of paths under this `name`,
     /// - destination `name` already exists at the same relative `path`,
     /// - underlying filesystem rename fails.
     ///
@@ -1346,36 +1346,27 @@ impl DatabaseManager {
             false => PathBuf::from(&name),
         };
 
+        let new_id = ItemId::with_index(name.clone(), id.get_index());
+
+        if new_id != id && self.items.contains_key(&new_id) {
+            return Err(DatabaseError::IdAlreadyExists(name));
+        }
+
         if self
             .items
-            .get(&name)
-            .is_some_and(|paths| paths.iter().any(|entry| entry == &relative_path))
+            .iter()
+            .any(|(entry_id, entry_path)| *entry_id != id && entry_path == &relative_path)
         {
-            return Err(DatabaseError::IdAlreadyExists(name));
+            return Err(DatabaseError::IdAlreadyExists(new_id.as_string()));
         }
 
         fs::rename(&path, renamed_path)?;
 
-        let old_name = id.get_name().to_string();
-        let old_paths = self
+        let _old_path = self
             .items
-            .get_mut(&old_name)
+            .remove(&id)
             .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))?;
-
-        if id.get_index() >= old_paths.len() {
-            return Err(DatabaseError::IndexOutOfBounds {
-                id: id.as_string(),
-                index: id.get_index(),
-                len: old_paths.len(),
-            });
-        }
-
-        old_paths.swap_remove(id.get_index());
-        if old_paths.is_empty() {
-            self.items.remove(&old_name);
-        }
-
-        self.items.entry(name).or_default().push(relative_path);
+        self.items.insert(new_id, relative_path);
 
         Ok(())
     }
@@ -1389,7 +1380,6 @@ impl DatabaseManager {
     /// # Errors
     /// Returns an error if:
     /// - `id` cannot be found,
-    /// - `id.index` is out of range for the list of paths under this `name`,
     /// - directory deletion does not match `force` rules,
     /// - filesystem delete operations fail.
     ///
@@ -1410,9 +1400,10 @@ impl DatabaseManager {
         force: impl Into<bool>,
     ) -> Result<(), DatabaseError> {
         let id = id.into();
+        let force = force.into();
 
         if id.get_name().is_empty() {
-            match delete_directory(&self.locate_absolute(id)?, force) {
+            match self.delete_directory(&self.locate_absolute(id)?, force) {
                 Ok(_) => {
                     self.path = PathBuf::new();
                     self.items.drain();
@@ -1425,29 +1416,14 @@ impl DatabaseManager {
         let path = self.locate_absolute(&id)?;
 
         if path.is_dir() {
-            delete_directory(&path, force)?;
+            self.delete_directory(&path, force)?;
         } else {
             remove_file(path)?;
         }
 
-        let key = id.get_name().to_string();
-        let paths = self
-            .items
-            .get_mut(&key)
+        self.items
+            .remove(&id)
             .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))?;
-
-        if id.get_index() >= paths.len() {
-            return Err(DatabaseError::IndexOutOfBounds {
-                id: id.as_string(),
-                index: id.get_index(),
-                len: paths.len(),
-            });
-        }
-
-        paths.swap_remove(id.get_index());
-        if paths.is_empty() {
-            self.items.remove(&key);
-        }
 
         Ok(())
     }
@@ -1461,8 +1437,7 @@ impl DatabaseManager {
     ///
     /// # Errors
     /// Returns an error if:
-    /// - `id.name` does not exist,
-    /// - `id.index` is out of bounds.
+    /// - `id` does not exist.
     ///
     /// # Examples
     /// ```no_run
@@ -1494,8 +1469,7 @@ impl DatabaseManager {
     ///
     /// # Errors
     /// Returns an error if:
-    /// - `id.name` does not exist,
-    /// - `id.index` is out of bounds.
+    /// - `id` does not exist.
     ///
     /// # Examples
     /// ```no_run
@@ -1517,75 +1491,22 @@ impl DatabaseManager {
         self.resolve_path_by_id(&id)
     }
 
-    /// Returns all stored relative paths for a shared `name`.
-    ///
-    /// # Parameters
-    /// - `id`: shared-name **`ItemId`**. `index` is ignored for lookup.
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - `id` is the `ItemId::database_id()`,
-    /// - no entry exists for `id.name`.
-    ///
-    /// # Examples
-    /// ```no_run
-    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
-    ///
-    /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
-    ///     manager.write_new(ItemId::id("a.txt"), ItemId::database_id())?;
-    ///     let _paths = manager.get_paths_for_id(ItemId::id("a.txt"))?;
-    ///     Ok(())
-    /// }
-    /// ```
-    pub fn get_paths_for_id(&self, id: impl Into<ItemId>) -> Result<&Vec<PathBuf>, DatabaseError> {
-        let id = id.into();
-
-        if id.get_name().is_empty() {
-            return Err(DatabaseError::RootIdUnsupported);
-        }
-
+    /// Returns all stored **`ItemId`** values that share a `name`.
+    pub fn get_ids_by_name(&self, name: impl AsRef<str>) -> Vec<ItemId> {
         self.items
-            .get(id.get_name())
-            .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))
+            .keys()
+            .filter(|id| id.get_name() == name.as_ref())
+            .cloned()
+            .collect()
     }
 
-    /// Returns all specific **`ItemId`** values for a shared `name`.
-    ///
-    /// # Parameters
-    /// - `id`: shared-name **`ItemId`**. `index` is ignored for lookup.
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - `ItemId::database_id()` is provided,
-    /// - no entry exists for `id.name`.
-    ///
-    /// # Examples
-    /// ```no_run
-    /// use file_database::{DatabaseError, DatabaseManager, ItemId};
-    ///
-    /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
-    ///     manager.write_new(ItemId::id("a.txt"), ItemId::database_id())?;
-    ///     let _ids = manager.get_ids_from_shared_id(ItemId::id("a.txt"))?;
-    ///     Ok(())
-    /// }
-    /// ```
-    pub fn get_ids_from_shared_id(
-        &self,
-        id: impl Into<ItemId>,
-    ) -> Result<Vec<ItemId>, DatabaseError> {
-        let id = id.into();
-
-        let paths = self.get_paths_for_id(&id)?;
-
-        let ids = paths
-            .iter()
-            .enumerate()
-            .map(|(index, _)| ItemId::with_index(id.get_name().to_string(), index))
-            .collect();
-
-        Ok(ids)
+    /// Returns all stored **`ItemId`** values that share an `index`.
+    pub fn get_ids_by_index(&self, index: usize) -> Vec<ItemId> {
+        self.items
+            .keys()
+            .filter(|id| id.get_index() == index)
+            .cloned()
+            .collect()
     }
 
     /// Scans files on disk and compares them to entries in this scan area.
@@ -1643,24 +1564,28 @@ impl DatabaseManager {
         let mut existing_in_scope_set = HashSet::new();
         let mut removed = Vec::new();
         let mut unchanged_count = 0usize;
+        let mut removed_ids = Vec::new();
 
-        for (name, paths) in &self.items {
-            for (index, path) in paths.iter().enumerate() {
-                if !is_path_in_scope(path, scope_relative.as_deref(), recursive) {
-                    continue;
-                }
-
-                existing_in_scope_set.insert(path.clone());
-
-                if discovered_set.contains(path) {
-                    unchanged_count += 1;
-                } else {
-                    removed.push(ExternalChange::Removed {
-                        id: ItemId::with_index(name.clone(), index),
-                        path: path.clone(),
-                    });
-                }
+        for (id, path) in &self.items {
+            if !self.is_path_in_scope(path, scope_relative.as_deref(), recursive) {
+                continue;
             }
+
+            existing_in_scope_set.insert(path.clone());
+
+            if discovered_set.contains(path) {
+                unchanged_count += 1;
+            } else {
+                removed.push(ExternalChange::Removed {
+                    id: id.clone(),
+                    path: path.clone(),
+                });
+                removed_ids.push(id.clone());
+            }
+        }
+
+        for id in removed_ids {
+            self.items.remove(&id);
         }
 
         let mut added_paths: Vec<PathBuf> = discovered_paths
@@ -1669,40 +1594,20 @@ impl DatabaseManager {
             .collect();
 
         let mut added = Vec::new();
-        let mut add_offsets: HashMap<String, usize> = HashMap::new();
-        for path in &added_paths {
-            let name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or(DatabaseError::OsStringConversion)?
-                .to_string();
-            let base_len = self.items.get(&name).map(|paths| paths.len()).unwrap_or(0);
-            let offset = add_offsets.entry(name.clone()).or_insert(0);
-            let index = base_len + *offset;
-            *offset += 1;
-
-            added.push(ExternalChange::Added {
-                id: ItemId::with_index(name, index),
-                path: path.clone(),
-            });
-        }
-
-        let mut empty_keys = Vec::new();
-        for (name, paths) in self.items.iter_mut() {
-            paths.retain(|path| {
-                !is_path_in_scope(path, scope_relative.as_deref(), recursive)
-                    || discovered_set.contains(path)
-            });
-            if paths.is_empty() {
-                empty_keys.push(name.clone());
-            }
-        }
-        for key in empty_keys {
-            self.items.remove(&key);
-        }
-
         match policy {
-            ScanPolicy::DetectOnly => (),
+            ScanPolicy::DetectOnly => {
+                for path in &added_paths {
+                    let name = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or(DatabaseError::OsStringConversion)?
+                        .to_string();
+                    added.push(ExternalChange::Added {
+                        id: ItemId::id(name),
+                        path: path.clone(),
+                    });
+                }
+            }
             ScanPolicy::AddNew => {
                 for path in &added_paths {
                     let name = path
@@ -1710,10 +1615,27 @@ impl DatabaseManager {
                         .and_then(|name| name.to_str())
                         .ok_or(DatabaseError::OsStringConversion)?
                         .to_string();
-                    self.items.entry(name).or_default().push(path.clone());
+                    let id = self.next_generated_id(name);
+                    self.items.insert(id.clone(), path.clone());
+                    added.push(ExternalChange::Added {
+                        id,
+                        path: path.clone(),
+                    });
                 }
             }
             ScanPolicy::RemoveNew => {
+                for path in &added_paths {
+                    let name = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or(DatabaseError::OsStringConversion)?
+                        .to_string();
+                    added.push(ExternalChange::Added {
+                        id: ItemId::id(name),
+                        path: path.clone(),
+                    });
+                }
+
                 added_paths.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
                 for path in added_paths {
                     let absolute = self.path.join(&path);
@@ -1731,6 +1653,13 @@ impl DatabaseManager {
         }
 
         let total_changed_count = added.len() + removed.len();
+
+        match policy {
+            ScanPolicy::RemoveNew => {
+                added.clear();
+            },
+            _ => (),
+        }
 
         Ok(ScanReport {
             scanned_from: scan_from,
@@ -1777,7 +1706,7 @@ impl DatabaseManager {
             remove_dir_all(&destination_database_path)?;
         }
 
-        copy_directory_recursive(&self.path, &destination_database_path)?;
+        self.copy_directory_recursive(&self.path, &destination_database_path)?;
         remove_dir_all(&self.path)?;
 
         self.path = destination_database_path;
@@ -1796,7 +1725,6 @@ impl DatabaseManager {
     /// - `id` is root or cannot be found,
     /// - destination is not a directory,
     /// - source and destination are identical,
-    /// - `id.index` is out of bounds for the source `name` vector,
     /// - filesystem move fails.
     ///
     /// # Examples
@@ -1850,35 +1778,16 @@ impl DatabaseManager {
 
         fs::rename(&source_absolute, &destination_absolute)?;
 
-        let old_name = id.get_name().to_string();
-        let old_paths = self
-            .items
-            .get_mut(&old_name)
-            .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))?;
-
-        if id.get_index() >= old_paths.len() {
-            return Err(DatabaseError::IndexOutOfBounds {
-                id: id.as_string(),
-                index: id.get_index(),
-                len: old_paths.len(),
-            });
-        }
-
-        old_paths.swap_remove(id.get_index());
-        if old_paths.is_empty() {
-            self.items.remove(&old_name);
-        }
-
         let relative_destination = destination_absolute.strip_prefix(&self.path)?.to_path_buf();
-        let new_name = match relative_destination.file_name() {
-            Some(name) => os_str_to_string(Some(name))?,
-            None => old_name,
-        };
+        let source_name = relative_destination
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(DatabaseError::OsStringConversion)?
+            .to_string();
+        let migrated_id = ItemId::with_index(source_name, id.get_index());
 
-        self.items
-            .entry(new_name)
-            .or_default()
-            .push(relative_destination);
+        self.items.remove(&id);
+        self.items.insert(migrated_id, relative_destination);
 
         Ok(())
     }
@@ -1897,7 +1806,6 @@ impl DatabaseManager {
     /// - `id` is root or cannot be found,
     /// - destination is inside the database,
     /// - destination path cannot be created or used as a directory,
-    /// - `id.index` is out of bounds when removing moved entries,
     /// - filesystem copy/move operations fail.
     ///
     /// # Examples
@@ -1965,7 +1873,7 @@ impl DatabaseManager {
         match mode {
             ExportMode::Copy => {
                 if source_absolute.is_dir() {
-                    copy_directory_recursive(&source_absolute, &destination_absolute)?;
+                    self.copy_directory_recursive(&source_absolute, &destination_absolute)?;
                 } else {
                     fs::copy(&source_absolute, &destination_absolute)?;
                 }
@@ -1975,7 +1883,7 @@ impl DatabaseManager {
                     Ok(_) => (),
                     Err(_) => {
                         if source_absolute.is_dir() {
-                            copy_directory_recursive(&source_absolute, &destination_absolute)?;
+                            self.copy_directory_recursive(&source_absolute, &destination_absolute)?;
                             remove_dir_all(&source_absolute)?;
                         } else {
                             fs::copy(&source_absolute, &destination_absolute)?;
@@ -1983,25 +1891,7 @@ impl DatabaseManager {
                         }
                     }
                 }
-
-                let key = id.get_name().to_string();
-                let paths = self
-                    .items
-                    .get_mut(&key)
-                    .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))?;
-
-                if id.get_index() >= paths.len() {
-                    return Err(DatabaseError::IndexOutOfBounds {
-                        id: id.as_string(),
-                        index: id.get_index(),
-                        len: paths.len(),
-                    });
-                }
-
-                paths.swap_remove(id.get_index());
-                if paths.is_empty() {
-                    self.items.remove(&key);
-                }
+                self.items.remove(&id);
             }
         }
 
@@ -2077,14 +1967,14 @@ impl DatabaseManager {
         if destination_absolute.exists()
             || self
                 .items
-                .get(&item_name)
-                .is_some_and(|paths| paths.iter().any(|path| path == &destination_relative))
+                .values()
+                .any(|path| path == &destination_relative)
         {
             return Err(DatabaseError::IdAlreadyExists(item_name));
         }
 
         if source_path.is_dir() {
-            copy_directory_recursive(&source_path, &destination_absolute)?;
+            self.copy_directory_recursive(&source_path, &destination_absolute)?;
         } else if source_path.is_file() {
             fs::copy(&source_path, &destination_absolute)?;
         } else {
@@ -2093,10 +1983,8 @@ impl DatabaseManager {
             ));
         }
 
-        self.items
-            .entry(item_name)
-            .or_default()
-            .push(destination_relative);
+        let id = self.next_generated_id(item_name);
+        self.items.insert(id, destination_relative);
 
         Ok(())
     }
@@ -2158,27 +2046,24 @@ impl DatabaseManager {
         if destination_absolute.exists()
             || self
                 .items
-                .get(&name)
-                .is_some_and(|paths| paths.iter().any(|path| path == &destination_relative))
+                .values()
+                .any(|path| path == &destination_relative)
         {
             return Err(DatabaseError::IdAlreadyExists(name));
         }
 
         if source_absolute.is_dir() {
-            copy_directory_recursive(&source_absolute, &destination_absolute)?;
+            self.copy_directory_recursive(&source_absolute, &destination_absolute)?;
         } else {
             fs::copy(&source_absolute, &destination_absolute)?;
         }
 
-        self.items
-            .entry(
-                destination_relative
-                    .file_name()
-                    .map(|name| name.to_string_lossy().to_string())
-                    .unwrap_or_default(),
-            )
-            .or_default()
-            .push(destination_relative);
+        let duplicate_name = destination_relative
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let duplicate_id = self.next_generated_id(duplicate_name);
+        self.items.insert(duplicate_id, destination_relative);
 
         Ok(())
     }
@@ -2226,20 +2111,14 @@ impl DatabaseManager {
                 path.file_stem()
             };
 
-            match os_str_to_string(os) {
-                Ok(name) => Some(name),
-                Err(_) => None,
-            }
+            os_str_to_string(os).ok()
         };
 
         let extension = {
             if path.is_dir() {
                 None
             } else {
-                match os_str_to_string(path.extension()) {
-                    Ok(extension) => Some(extension),
-                    Err(_) => None,
-                }
+                os_str_to_string(path.extension()).ok()
             }
         };
 
@@ -2267,27 +2146,30 @@ impl DatabaseManager {
         })
     }
 
-    /// Gets one specific path from a shared `name` + `index`.
+    /// Gets one specific path for an exact **`ItemId`** key.
     ///
     /// # Errors
     /// Returns an error if:
-    /// - the shared `name` key does not exist,
-    /// - `id.index` is out of bounds.
+    /// - the exact key does not exist.
     fn resolve_path_by_id(&self, id: &ItemId) -> Result<&PathBuf, DatabaseError> {
-        let matches = self
-            .items
-            .get(id.get_name())
-            .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))?;
+        self.items
+            .get(id)
+            .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))
+    }
 
-        if id.get_index() >= matches.len() {
-            return Err(DatabaseError::IndexOutOfBounds {
-                id: id.as_string(),
-                index: id.get_index(),
-                len: matches.len(),
-            });
+    /// Tracks explicit IDs so generated IDs remain monotonic.
+    fn bump_next_index(&mut self, index: usize) {
+        if index >= self.next_index {
+            self.next_index = index.saturating_add(1);
         }
+    }
 
-        Ok(&matches[id.get_index()])
+    /// Generates a new **`ItemId`** with a unique `index`.
+    fn next_generated_id(&mut self, name: impl Into<String>) -> ItemId {
+        let name = name.into();
+        let index = self.next_index;
+        self.next_index = self.next_index.saturating_add(1);
+        ItemId::with_index(name, index)
     }
 
     /// Overwrites a file safely by using a temp file and rename.
@@ -2369,6 +2251,61 @@ impl DatabaseManager {
 
         Ok(collected)
     }
+
+    /// Recursively copies a directory tree from `from` to `to`.
+    fn copy_directory_recursive(&self, from: &Path, to: &Path) -> Result<(), DatabaseError> {
+        fs::create_dir_all(to)?;
+
+        for entry in fs::read_dir(from)? {
+            let entry = entry?;
+            let source_path = entry.path();
+            let destination_path = to.join(entry.file_name());
+
+            if source_path.is_dir() {
+                self.copy_directory_recursive(&source_path, &destination_path)?;
+            } else {
+                fs::copy(&source_path, &destination_path)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Returns whether `path` is inside the requested scan scope.
+    fn is_path_in_scope(
+        &self,
+        path: &Path,
+        scope_relative: Option<&Path>,
+        recursive: bool,
+    ) -> bool {
+        match scope_relative {
+            None => {
+                if recursive {
+                    true
+                } else {
+                    path.parent()
+                        .is_some_and(|parent| parent.as_os_str().is_empty())
+                }
+            }
+            Some(scope_relative) => {
+                if recursive {
+                    path.starts_with(scope_relative) && path != scope_relative
+                } else {
+                    path.parent() == Some(scope_relative)
+                }
+            }
+        }
+    }
+
+    /// Deletes a directory in forced or non-forced mode.
+    fn delete_directory(&self, path: &Path, force: bool) -> Result<(), DatabaseError> {
+        if force {
+            remove_dir_all(path)?;
+        } else {
+            remove_dir(path)?;
+        }
+        Ok(())
+    }
 }
 
 // -------- Functions --------
@@ -2432,62 +2369,4 @@ fn sys_time_to_time_since(time: io::Result<SystemTime>) -> Option<u64> {
     };
 
     sys_time_to_unsigned_int(Ok(UNIX_EPOCH + duration))
-}
-
-/// Recursively copies a directory tree from `from` to `to`.
-///
-/// # Errors
-/// Returns **`DatabaseError`** if reading folders or copying files fails.
-fn copy_directory_recursive(from: &Path, to: &Path) -> Result<(), DatabaseError> {
-    fs::create_dir_all(to)?;
-
-    for entry in fs::read_dir(from)? {
-        let entry = entry?;
-        let source_path = entry.path();
-        let destination_path = to.join(entry.file_name());
-
-        if source_path.is_dir() {
-            copy_directory_recursive(&source_path, &destination_path)?;
-        } else {
-            fs::copy(&source_path, &destination_path)?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Returns whether `path` is inside the requested scan scope.
-fn is_path_in_scope(path: &Path, scope_relative: Option<&Path>, recursive: bool) -> bool {
-    match scope_relative {
-        None => {
-            if recursive {
-                true
-            } else {
-                path.parent()
-                    .is_some_and(|parent| parent.as_os_str().is_empty())
-            }
-        }
-        Some(scope_relative) => {
-            if recursive {
-                path.starts_with(scope_relative) && path != scope_relative
-            } else {
-                path.parent() == Some(scope_relative)
-            }
-        }
-    }
-}
-
-/// Deletes a directory `path` in forced or non-forced mode.
-///
-/// # Errors
-/// Returns **`DatabaseError`** if the remove operation fails.
-fn delete_directory<T>(path: &PathBuf, force: T) -> Result<(), DatabaseError>
-where
-    T: Into<bool>,
-{
-    if force.into() {
-        return Ok(remove_dir_all(path)?);
-    } else {
-        return Ok(remove_dir(path)?);
-    }
 }
