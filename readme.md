@@ -22,7 +22,7 @@ file_database = "1.0.0"
 use file_database::{DatabaseError, DatabaseManager, ItemId};
 
 fn main() -> Result<(), DatabaseError> {
-  let mut db = DatabaseManager::new(".", "database")?;
+  let mut db = DatabaseManager::create_database(".", "database")?;
 
     db.write_new(ItemId::id("notes.txt"), ItemId::database_id())?;
     db.overwrite_existing(ItemId::id("notes.txt"), b"hello world")?;
@@ -42,10 +42,16 @@ fn main() -> Result<(), DatabaseError> {
   - `index`: stable slot under that shared key
   
   This means duplicate names are allowed. `ItemId::id("name")` always means index `0`. Use `ItemId::with_index("name", i)` for a specific slot.
+  When IDs are auto-generated (for example when opening an existing directory), file names keep the extension because indexing uses `file_name()`.
   
   `ItemId::database_id()` is the root ID that refers to the database root directory.
 
 ### Create and organize
+
+`create_database` works as create-or-open:
+if the directory does not exist, it creates it
+
+if the directory already exists, it opens it and indexes current contents recursively
 
 - `write_new(id, parent)`
 - `rename(id, new_name)`
@@ -127,7 +133,7 @@ use file_database::{DatabaseError, DatabaseManager, GenPath};
 
 fn main() -> Result<(), DatabaseError> {
     let root = GenPath::from_working_dir(0)?;
-    let _db = DatabaseManager::new(root, "database")?;
+    let _db = DatabaseManager::create_database(root, "database")?;
     Ok(())
 }
 ```
