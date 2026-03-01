@@ -3,6 +3,8 @@
 //!
 //! This crate gives you a simple way to manage files and folders inside one database directory.
 //! The main type is **`DatabaseManager`**, and items are addressed with **`ItemId`**.
+//! `DatabaseManager::create_database` creates the directory if missing, or opens an existing
+//! directory and indexes its current contents.
 //!
 //! ## How `ItemId` works
 //! - **`ItemId`** has a `name` and an `index`.
@@ -69,6 +71,22 @@
 //!     let mut manager = DatabaseManager::create_database(".", "database")?;
 //!     manager.write_new(ItemId::id("example.txt"), ItemId::database_id())?;
 //!     manager.overwrite_existing(ItemId::id("example.txt"), b"hello")?;
+//!     Ok(())
+//! }
+//! ```
+//!
+//! # Example: Open an existing database directory
+//! ```no_run
+//! use std::fs::{create_dir_all, File};
+//! use file_database::{DatabaseError, DatabaseManager};
+//!
+//! fn main() -> Result<(), DatabaseError> {
+//!     create_dir_all("./db_parent/database/folder")?;
+//!     File::create("./db_parent/database/config.json")?;
+//!
+//!     let manager = DatabaseManager::create_database("./db_parent", "database")?;
+//!     let ids = manager.get_ids_by_name("config.json");
+//!     assert_eq!(ids.len(), 1);
 //!     Ok(())
 //! }
 //! ```
@@ -819,17 +837,17 @@ pub struct DatabaseManager {
 }
 
 impl DatabaseManager {
-    /// Creates a new database directory and returns a manager for it.
+    /// Creates or opens a database directory and returns a manager for it.
     ///
     /// # Parameters
-    /// - `path`: parent directory where the database folder will be created.
+    /// - `path`: parent directory where the database folder should exist.
     /// - `name`: database directory name appended to `path`.
     ///
     /// # Errors
     /// Returns an error if:
-    /// - the destination directory already exists,
-    /// - parent directories are missing,
-    /// - the process cannot create directories at the destination.
+    /// - the target path exists but is not a directory,
+    /// - parent directories are missing when creating a new database directory,
+    /// - the process cannot create/read directories at the destination.
     ///
     /// # Examples
     /// ```no_run
@@ -845,12 +863,22 @@ impl DatabaseManager {
 
         path.push(name);
 
-        create_dir(&path)?;
+        if !path.exists() {
+            create_dir(&path)?;
+        } else if !path.is_dir() {
+            return Err(DatabaseError::NotADirectory(path));
+        }
 
-        let manager = Self {
+        let mut manager = Self {
             path,
             items: HashMap::new(),
         };
+
+        let discovered = manager.collect_paths_in_scope(&manager.path, true)?;
+        for relative_path in discovered {
+            let name = os_str_to_string(relative_path.file_name())?;
+            manager.insert_generated_path(name, relative_path);
+        }
 
         Ok(manager)
     }
