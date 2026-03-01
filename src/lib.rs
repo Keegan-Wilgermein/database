@@ -243,34 +243,6 @@ impl From<bool> for ShouldSort {
 }
 
 #[derive(Debug, PartialEq, Clone, Default)]
-/// Controls whether APIs should serialize values.
-pub enum Serialize {
-    #[default]
-    Serialize,
-    NoSerialize,
-}
-
-impl From<Serialize> for bool {
-    /// Converts **`Serialize`** into its boolean form.
-    fn from(val: Serialize) -> Self {
-        match val {
-            Serialize::Serialize => true,
-            Serialize::NoSerialize => false,
-        }
-    }
-}
-
-impl From<bool> for Serialize {
-    /// Converts a boolean into **`Serialize`**.
-    fn from(value: bool) -> Self {
-        match value {
-            true => Serialize::Serialize,
-            false => Serialize::NoSerialize,
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Clone, Default)]
 /// Controls whether export copies or moves the source.
 pub enum ExportMode {
     #[default]
@@ -593,7 +565,7 @@ impl FileSize {
         self.unit
     }
 
-    /// Returns a human-readable unit string, pluralized when needed.
+    /// Returns a string representing an amount of data, pluralized when needed.
     ///
     /// # Examples
     /// ```
