@@ -7,11 +7,12 @@
 //! ## How `ItemId` works
 //! - **`ItemId`** has a `name` and an `index`.
 //! - `name` is the display/key name (for example `"test_file.txt"`).
-//! - `index` is part of identity and keeps IDs unique even when names repeat.
+//! - `index` is the stable slot for that `name` bucket in the internal `StableVec`.
 //! - `ItemId::id("name")` always means index `0`.
 //! - `ItemId::database_id()` is the root ID for the database itself.
 //!
-//! This means duplicate names are allowed, and each item is still uniquely addressable.
+//! This means duplicate names are allowed, and each item is still uniquely addressable by
+//! the pair `(name, index)`.
 //!
 //! # Example: Build `ItemId` values
 //! ```
@@ -65,19 +66,19 @@
 //! use file_database::{DatabaseError, DatabaseManager, ItemId};
 //!
 //! fn main() -> Result<(), DatabaseError> {
-//!     let mut manager = DatabaseManager::new(".", "database")?;
+//!     let mut manager = DatabaseManager::create_database(".", "database")?;
 //!     manager.write_new(ItemId::id("example.txt"), ItemId::database_id())?;
 //!     manager.overwrite_existing(ItemId::id("example.txt"), b"hello")?;
 //!     Ok(())
 //! }
 //! ```
 //!
-//! # Example: Duplicate names with indexes
+//! # Example: Duplicate names with stable indexes
 //! ```no_run
 //! use file_database::{DatabaseError, DatabaseManager, ItemId};
 //!
 //! fn main() -> Result<(), DatabaseError> {
-//!     let mut manager = DatabaseManager::new(".", "database")?;
+//!     let mut manager = DatabaseManager::create_database(".", "database")?;
 //!
 //!     manager.write_new(ItemId::id("folder_a"), ItemId::database_id())?;
 //!     manager.write_new(ItemId::id("folder_b"), ItemId::database_id())?;
@@ -98,7 +99,7 @@
 //! use file_database::{DatabaseError, DatabaseManager, ItemId};
 //!
 //! fn main() -> Result<(), DatabaseError> {
-//!     let mut manager = DatabaseManager::new(".", "database")?;
+//!     let mut manager = DatabaseManager::create_database(".", "database")?;
 //!     manager.write_new(ItemId::with_index("a.txt", 1), ItemId::database_id())?;
 //!     manager.write_new(ItemId::id("folder"), ItemId::database_id())?;
 //!     manager.write_new(ItemId::with_index("a.txt", 2), ItemId::id("folder"))?;
@@ -773,12 +774,76 @@ impl ScanReport {
     }
 }
 
+#[derive(Debug, PartialEq, Default)]
+struct StableVec<T> {
+    list: Vec<Option<T>>,
+    free: Vec<usize>,
+}
+
+impl<T> StableVec<T> {
+    fn push(&mut self, data: T) -> usize {
+        if let Some(index) = self.free.pop() {
+            self.list[index] = Some(data);
+            index
+        } else {
+            self.list.push(Some(data));
+            self.list.len() - 1
+        }
+    }
+
+    fn remove(&mut self, index: usize) -> bool {
+        if index >= self.list.len() || self.list[index].is_none() {
+            return false;
+        }
+
+        self.list[index] = None;
+        self.free.push(index);
+        true
+    }
+
+    fn get(&self, index: usize) -> Option<&T> {
+        self.list.get(index).and_then(|value| value.as_ref())
+    }
+
+    fn insert_at(&mut self, index: usize, data: T) -> bool {
+        if index < self.list.len() {
+            if self.list[index].is_some() {
+                return false;
+            }
+            self.list[index] = Some(data);
+            if let Some(free_index) = self.free.iter().position(|slot| *slot == index) {
+                self.free.swap_remove(free_index);
+            }
+            return true;
+        }
+
+        while self.list.len() < index {
+            let free_slot = self.list.len();
+            self.list.push(None);
+            self.free.push(free_slot);
+        }
+
+        self.list.push(Some(data));
+        true
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (usize, &T)> {
+        self.list
+            .iter()
+            .enumerate()
+            .filter_map(|(index, value)| value.as_ref().map(|value| (index, value)))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.list.iter().all(Option::is_none)
+    }
+}
+
 #[derive(Debug, PartialEq)]
 /// Main type that manages a database directory and its index.
 pub struct DatabaseManager {
     path: PathBuf,
-    items: HashMap<ItemId, PathBuf>,
-    next_index: usize,
+    items: HashMap<String, StableVec<PathBuf>>,
 }
 
 impl DatabaseManager {
@@ -799,11 +864,11 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let _manager = DatabaseManager::new(".", "database")?;
+    ///     let _manager = DatabaseManager::create_database(".", "database")?;
     ///     Ok(())
     /// }
     /// ```
-    pub fn new(path: impl AsRef<Path>, name: impl AsRef<Path>) -> Result<Self, DatabaseError> {
+    pub fn create_database(path: impl AsRef<Path>, name: impl AsRef<Path>) -> Result<Self, DatabaseError> {
         let mut path: PathBuf = path.as_ref().to_path_buf();
 
         path.push(name);
@@ -813,7 +878,6 @@ impl DatabaseManager {
         let manager = Self {
             path,
             items: HashMap::new(),
-            next_index: 1,
         };
 
         Ok(manager)
@@ -841,7 +905,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("notes.txt"), ItemId::database_id())?;
     ///     Ok(())
     /// }
@@ -858,10 +922,6 @@ impl DatabaseManager {
             return Err(DatabaseError::RootIdUnsupported);
         }
 
-        if self.items.contains_key(&id) {
-            return Err(DatabaseError::IdAlreadyExists(id.as_string()));
-        }
-
         let absolute_parent_path = self.locate_absolute(&parent)?;
         let relative_path = if parent.get_name().is_empty() {
             PathBuf::from(id.get_name())
@@ -872,7 +932,7 @@ impl DatabaseManager {
         };
         let absolute_path = absolute_parent_path.join(id.get_name());
 
-        if self.items.values().any(|path| path == &relative_path) {
+        if self.path_exists_in_index(&relative_path) {
             return Err(DatabaseError::IdAlreadyExists(id.as_string()));
         }
 
@@ -882,8 +942,7 @@ impl DatabaseManager {
             File::create_new(&absolute_path)?;
         }
 
-        self.bump_next_index(id.get_index());
-        self.items.insert(id, relative_path);
+        self.insert_path_for_id(&id, relative_path)?;
         Ok(())
     }
 
@@ -906,7 +965,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("blob.bin"), ItemId::database_id())?;
     ///     manager.overwrite_existing(ItemId::id("blob.bin"), [1_u8, 2, 3, 4])?;
     ///     Ok(())
@@ -952,7 +1011,7 @@ impl DatabaseManager {
     /// }
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("config.json"), ItemId::database_id())?;
     ///     manager.overwrite_existing_json(ItemId::id("config.json"), &Config { retries: 3 }, false)?;
     ///     Ok(())
@@ -995,7 +1054,7 @@ impl DatabaseManager {
     /// }
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("state.bin"), ItemId::database_id())?;
     ///     manager.overwrite_existing_binary(ItemId::id("state.bin"), &State::Ready)?;
     ///     Ok(())
@@ -1030,7 +1089,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("stream.bin"), ItemId::database_id())?;
     ///     let mut source = Cursor::new(vec![9_u8; 1024]);
     ///     let _bytes = manager.overwrite_existing_from_reader(ItemId::id("stream.bin"), &mut source)?;
@@ -1063,7 +1122,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("data.bin"), ItemId::database_id())?;
     ///     manager.overwrite_existing(ItemId::id("data.bin"), [1_u8, 2, 3])?;
     ///     let _data = manager.read_existing(ItemId::id("data.bin"))?;
@@ -1102,7 +1161,7 @@ impl DatabaseManager {
     /// }
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("config.json"), ItemId::database_id())?;
     ///     manager.overwrite_existing_json(ItemId::id("config.json"), &Config { retries: 3 }, false)?;
     ///     let _loaded: Config = manager.read_existing_json(ItemId::id("config.json"))?;
@@ -1138,7 +1197,7 @@ impl DatabaseManager {
     /// }
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("state.bin"), ItemId::database_id())?;
     ///     manager.overwrite_existing_binary(ItemId::id("state.bin"), &State::Ready)?;
     ///     let _loaded: State = manager.read_existing_binary(ItemId::id("state.bin"))?;
@@ -1163,7 +1222,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("a.txt"), ItemId::database_id())?;
     ///     let _all = manager.get_all(true);
     ///     Ok(())
@@ -1172,7 +1231,16 @@ impl DatabaseManager {
     pub fn get_all(&self, sorted: impl Into<bool>) -> Vec<ItemId> {
         let sorted = sorted.into();
 
-        let mut list: Vec<ItemId> = self.items.keys().cloned().collect();
+        let mut list: Vec<ItemId> = self
+            .items
+            .iter()
+            .flat_map(|(name, paths)| {
+                paths
+                    .iter()
+                    .map(|(index, _)| ItemId::with_index(name.clone(), index))
+                    .collect::<Vec<ItemId>>()
+            })
+            .collect();
 
         if sorted {
             list.sort();
@@ -1199,7 +1267,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("folder"), ItemId::database_id())?;
     ///     manager.write_new(ItemId::id("a.txt"), ItemId::id("folder"))?;
     ///     let _children = manager.get_by_parent(ItemId::id("folder"), true)?;
@@ -1220,25 +1288,27 @@ impl DatabaseManager {
             return Err(DatabaseError::NotADirectory(absolute_parent));
         }
 
-        let mut list: Vec<ItemId> = if parent.get_name().is_empty() {
-            self.items
-                .iter()
-                .filter_map(|(id, item_path)| {
-                    item_path
-                        .parent()
-                        .is_some_and(|parent| parent.as_os_str().is_empty())
-                        .then_some(id.clone())
-                })
-                .collect()
+        let mut list: Vec<ItemId> = Vec::new();
+        let parent_path = if parent.get_name().is_empty() {
+            None
         } else {
-            let parent_path = self.locate_relative(parent)?;
-            self.items
-                .iter()
-                .filter_map(|(id, item_path)| {
-                    (item_path.parent() == Some(parent_path.as_path())).then_some(id.clone())
-                })
-                .collect()
+            Some(self.locate_relative(&parent)?.as_path())
         };
+
+        for (name, paths) in &self.items {
+            for (index, item_path) in paths.iter() {
+                let is_match = match parent_path {
+                    None => item_path
+                        .parent()
+                        .is_some_and(|path| path.as_os_str().is_empty()),
+                    Some(parent_path) => item_path.parent() == Some(parent_path),
+                };
+
+                if is_match {
+                    list.push(ItemId::with_index(name.clone(), index));
+                }
+            }
+        }
 
         if sorted {
             list.sort();
@@ -1264,7 +1334,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("folder"), ItemId::database_id())?;
     ///     manager.write_new(ItemId::id("a.txt"), ItemId::id("folder"))?;
     ///     let _parent = manager.get_parent(ItemId::id("a.txt"))?;
@@ -1284,12 +1354,12 @@ impl DatabaseManager {
             return Ok(ItemId::database_id());
         }
 
-        if let Some((parent_id, _)) = self
-            .items
-            .iter()
-            .find(|(_, item_path)| item_path.as_path() == parent)
-        {
-            return Ok(parent_id.clone());
+        for (name, paths) in &self.items {
+            for (index, item_path) in paths.iter() {
+                if item_path.as_path() == parent {
+                    return Ok(ItemId::with_index(name.clone(), index));
+                }
+            }
         }
 
         match parent.file_name() {
@@ -1316,7 +1386,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("old.txt"), ItemId::database_id())?;
     ///     manager.rename(ItemId::id("old.txt"), "new.txt")?;
     ///     Ok(())
@@ -1348,25 +1418,18 @@ impl DatabaseManager {
 
         let new_id = ItemId::with_index(name.clone(), id.get_index());
 
-        if new_id != id && self.items.contains_key(&new_id) {
-            return Err(DatabaseError::IdAlreadyExists(name));
-        }
-
         if self
-            .items
+            .all_paths()
             .iter()
-            .any(|(entry_id, entry_path)| *entry_id != id && entry_path == &relative_path)
+            .any(|(entry_id, entry_path)| entry_id != &id && *entry_path == &relative_path)
         {
             return Err(DatabaseError::IdAlreadyExists(new_id.as_string()));
         }
 
         fs::rename(&path, renamed_path)?;
 
-        let _old_path = self
-            .items
-            .remove(&id)
-            .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))?;
-        self.items.insert(new_id, relative_path);
+        self.remove_id_from_index(&id)?;
+        self.insert_path_for_id(&new_id, relative_path)?;
 
         Ok(())
     }
@@ -1388,7 +1451,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager, ForceDeletion, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("tmp.txt"), ItemId::database_id())?;
     ///     manager.delete(ItemId::id("tmp.txt"), ForceDeletion::Force)?;
     ///     Ok(())
@@ -1421,9 +1484,7 @@ impl DatabaseManager {
             remove_file(path)?;
         }
 
-        self.items
-            .remove(&id)
-            .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))?;
+        self.remove_id_from_index(&id)?;
 
         Ok(())
     }
@@ -1444,7 +1505,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("a.txt"), ItemId::database_id())?;
     ///     let _path = manager.locate_absolute(ItemId::id("a.txt"))?;
     ///     Ok(())
@@ -1476,7 +1537,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("a.txt"), ItemId::database_id())?;
     ///     let _relative = manager.locate_relative(ItemId::id("a.txt"))?;
     ///     Ok(())
@@ -1492,20 +1553,31 @@ impl DatabaseManager {
     }
 
     /// Returns all stored **`ItemId`** values that share a `name`.
+    ///
+    /// The returned IDs use the occupied stable indexes from that internal name bucket.
     pub fn get_ids_by_name(&self, name: impl AsRef<str>) -> Vec<ItemId> {
         self.items
-            .keys()
-            .filter(|id| id.get_name() == name.as_ref())
-            .cloned()
-            .collect()
+            .get(name.as_ref())
+            .map(|paths| {
+                paths
+                    .iter()
+                    .map(|(index, _)| ItemId::with_index(name.as_ref(), index))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Returns all stored **`ItemId`** values that share an `index`.
+    ///
+    /// This scans all name buckets and returns every ID whose stable slot equals `index`.
     pub fn get_ids_by_index(&self, index: usize) -> Vec<ItemId> {
         self.items
-            .keys()
-            .filter(|id| id.get_index() == index)
-            .cloned()
+            .iter()
+            .filter_map(|(name, paths)| {
+                paths
+                    .get(index)
+                    .map(|_| ItemId::with_index(name.clone(), index))
+            })
             .collect()
     }
 
@@ -1514,9 +1586,9 @@ impl DatabaseManager {
     /// Missing tracked items are always removed from the `items` index kept in memory.
     ///
     /// Policy behavior for newly discovered external items:
-    /// - `DetectOnly`: report only.
-    /// - `AddNew`: report and add to the `index`.
-    /// - `RemoveNew`: report and delete from disk.
+    /// - `DetectOnly`: detect only.
+    /// - `AddNew`: detect and add to the `index`.
+    /// - `RemoveNew`: delete from disk and do not keep them in the report.
     ///
     /// # Parameters
     /// - `scan_from`: root **`ItemId`** to scan from (`ItemId::database_id()` scans the full database).
@@ -1535,7 +1607,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager, ItemId, ScanPolicy};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     let _report = manager.scan_for_changes(ItemId::database_id(), ScanPolicy::AddNew, true)?;
     ///     Ok(())
     /// }
@@ -1566,26 +1638,29 @@ impl DatabaseManager {
         let mut unchanged_count = 0usize;
         let mut removed_ids = Vec::new();
 
-        for (id, path) in &self.items {
-            if !self.is_path_in_scope(path, scope_relative.as_deref(), recursive) {
-                continue;
-            }
+        for (name, paths) in &self.items {
+            for (index, path) in paths.iter() {
+                if !self.is_path_in_scope(path, scope_relative.as_deref(), recursive) {
+                    continue;
+                }
 
-            existing_in_scope_set.insert(path.clone());
+                existing_in_scope_set.insert(path.clone());
 
-            if discovered_set.contains(path) {
-                unchanged_count += 1;
-            } else {
-                removed.push(ExternalChange::Removed {
-                    id: id.clone(),
-                    path: path.clone(),
-                });
-                removed_ids.push(id.clone());
+                let id = ItemId::with_index(name.clone(), index);
+                if discovered_set.contains(path) {
+                    unchanged_count += 1;
+                } else {
+                    removed.push(ExternalChange::Removed {
+                        id: id.clone(),
+                        path: path.clone(),
+                    });
+                    removed_ids.push(id);
+                }
             }
         }
 
         for id in removed_ids {
-            self.items.remove(&id);
+            let _ = self.remove_id_from_index(&id);
         }
 
         let mut added_paths: Vec<PathBuf> = discovered_paths
@@ -1615,8 +1690,7 @@ impl DatabaseManager {
                         .and_then(|name| name.to_str())
                         .ok_or(DatabaseError::OsStringConversion)?
                         .to_string();
-                    let id = self.next_generated_id(name);
-                    self.items.insert(id.clone(), path.clone());
+                    let id = self.insert_generated_path(name, path.clone());
                     added.push(ExternalChange::Added {
                         id,
                         path: path.clone(),
@@ -1689,7 +1763,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.migrate_database("./new_parent")?;
     ///     Ok(())
     /// }
@@ -1732,7 +1806,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("folder"), ItemId::database_id())?;
     ///     manager.write_new(ItemId::id("a.txt"), ItemId::database_id())?;
     ///     manager.migrate_item(ItemId::id("a.txt"), ItemId::id("folder"))?;
@@ -1786,8 +1860,8 @@ impl DatabaseManager {
             .to_string();
         let migrated_id = ItemId::with_index(source_name, id.get_index());
 
-        self.items.remove(&id);
-        self.items.insert(migrated_id, relative_destination);
+        self.remove_id_from_index(&id)?;
+        self.insert_path_for_id(&migrated_id, relative_destination)?;
 
         Ok(())
     }
@@ -1813,7 +1887,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager, ExportMode, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("a.txt"), ItemId::database_id())?;
     ///     manager.export_item(ItemId::id("a.txt"), "./exports", ExportMode::Copy)?;
     ///     Ok(())
@@ -1891,7 +1965,7 @@ impl DatabaseManager {
                         }
                     }
                 }
-                self.items.remove(&id);
+                self.remove_id_from_index(&id)?;
             }
         }
 
@@ -1919,7 +1993,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("imports"), ItemId::database_id())?;
     ///     manager.import_item("./outside/example.txt", ItemId::id("imports"))?;
     ///     Ok(())
@@ -1965,10 +2039,7 @@ impl DatabaseManager {
         };
 
         if destination_absolute.exists()
-            || self
-                .items
-                .values()
-                .any(|path| path == &destination_relative)
+            || self.path_exists_in_index(&destination_relative)
         {
             return Err(DatabaseError::IdAlreadyExists(item_name));
         }
@@ -1983,8 +2054,7 @@ impl DatabaseManager {
             ));
         }
 
-        let id = self.next_generated_id(item_name);
-        self.items.insert(id, destination_relative);
+        let _id = self.insert_generated_path(item_name, destination_relative);
 
         Ok(())
     }
@@ -2008,7 +2078,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("a.txt"), ItemId::database_id())?;
     ///     manager.duplicate_item(ItemId::id("a.txt"), ItemId::database_id(), "copy.txt")?;
     ///     Ok(())
@@ -2044,10 +2114,7 @@ impl DatabaseManager {
         };
 
         if destination_absolute.exists()
-            || self
-                .items
-                .values()
-                .any(|path| path == &destination_relative)
+            || self.path_exists_in_index(&destination_relative)
         {
             return Err(DatabaseError::IdAlreadyExists(name));
         }
@@ -2062,8 +2129,7 @@ impl DatabaseManager {
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default();
-        let duplicate_id = self.next_generated_id(duplicate_name);
-        self.items.insert(duplicate_id, destination_relative);
+        let _duplicate_id = self.insert_generated_path(duplicate_name, destination_relative);
 
         Ok(())
     }
@@ -2088,7 +2154,7 @@ impl DatabaseManager {
     /// use file_database::{DatabaseError, DatabaseManager, ItemId};
     ///
     /// fn main() -> Result<(), DatabaseError> {
-    ///     let mut manager = DatabaseManager::new(".", "database")?;
+    ///     let mut manager = DatabaseManager::create_database(".", "database")?;
     ///     manager.write_new(ItemId::id("a.txt"), ItemId::database_id())?;
     ///     let _info = manager.get_file_information(ItemId::id("a.txt"))?;
     ///     Ok(())
@@ -2146,30 +2212,77 @@ impl DatabaseManager {
         })
     }
 
+    /// Returns all stored `(ItemId, relative_path)` pairs.
+    fn all_paths(&self) -> Vec<(ItemId, &PathBuf)> {
+        let mut result = Vec::new();
+
+        for (name, paths) in &self.items {
+            for (index, path) in paths.iter() {
+                result.push((ItemId::with_index(name.clone(), index), path));
+            }
+        }
+
+        result
+    }
+
+    /// Returns `true` when any stored item already uses `relative_path`.
+    fn path_exists_in_index(&self, relative_path: &Path) -> bool {
+        self.items
+            .values()
+            .any(|paths| paths.iter().any(|(_, path)| path == relative_path))
+    }
+
+    /// Inserts an exact `ItemId` -> path mapping.
+    fn insert_path_for_id(&mut self, id: &ItemId, path: PathBuf) -> Result<(), DatabaseError> {
+        let paths = self.items.entry(id.get_name().to_string()).or_default();
+        if !paths.insert_at(id.get_index(), path) {
+            return Err(DatabaseError::IdAlreadyExists(id.as_string()));
+        }
+        Ok(())
+    }
+
+    /// Inserts a generated id for a shared name and returns the generated `ItemId`.
+    fn insert_generated_path(&mut self, name: String, path: PathBuf) -> ItemId {
+        let paths = self.items.entry(name.clone()).or_default();
+        let index = paths.push(path);
+        ItemId::with_index(name, index)
+    }
+
+    /// Removes one exact id entry from the index and prunes empty name buckets.
+    fn remove_id_from_index(&mut self, id: &ItemId) -> Result<(), DatabaseError> {
+        let name = id.get_name().to_string();
+        let should_drop_name = {
+            let paths = self
+                .items
+                .get_mut(&name)
+                .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))?;
+
+            if !paths.remove(id.get_index()) {
+                return Err(DatabaseError::NoMatchingID(id.as_string()));
+            }
+
+            paths.is_empty()
+        };
+
+        if should_drop_name {
+            self.items.remove(&name);
+        }
+
+        Ok(())
+    }
+
     /// Gets one specific path for an exact **`ItemId`** key.
+    ///
+    /// This resolves `id.name` to a `StableVec` bucket and `id.index` to its stable slot.
     ///
     /// # Errors
     /// Returns an error if:
     /// - the exact key does not exist.
     fn resolve_path_by_id(&self, id: &ItemId) -> Result<&PathBuf, DatabaseError> {
         self.items
-            .get(id)
+            .get(id.get_name())
+            .and_then(|paths| paths.get(id.get_index()))
             .ok_or_else(|| DatabaseError::NoMatchingID(id.as_string()))
-    }
-
-    /// Tracks explicit IDs so generated IDs remain monotonic.
-    fn bump_next_index(&mut self, index: usize) {
-        if index >= self.next_index {
-            self.next_index = index.saturating_add(1);
-        }
-    }
-
-    /// Generates a new **`ItemId`** with a unique `index`.
-    fn next_generated_id(&mut self, name: impl Into<String>) -> ItemId {
-        let name = name.into();
-        let index = self.next_index;
-        self.next_index = self.next_index.saturating_add(1);
-        ItemId::with_index(name, index)
     }
 
     /// Overwrites a file safely by using a temp file and rename.
