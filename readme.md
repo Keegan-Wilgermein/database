@@ -5,21 +5,7 @@
 It manages one root directory and keeps an in-memory index so you can target items by ID instead of raw paths.
 
 ## What problem this solves
-
-- It cuts down boilerplate for common file-management tasks.
-- It gives you a simple ID-based way to track items instead of passing raw paths around.
-- It hides low-level filesystem bookkeeping behind a single API, so day-to-day usage stays straightforward.
-
-## `ItemId`
-
-An `ItemId` has two parts:
-
-- `name`: shared key (example: `"test_file.txt"`)
-- `index`: which match under that shared key
-
-This means duplicate names are allowed. `ItemId::id("name")` always means index `0`. Use `ItemId::with_index("name", i)` for other matches.
-
-`ItemId::database_id()` is the root ID that refers to the database root directory.
+It reduces the code needed for managing a file system by keeping track of everything for you
 
 ## Install
 
@@ -32,11 +18,11 @@ file_database = "1.0.0"
 
 ## Quick start
 
-```rust,no_run
+```rust
 use file_database::{DatabaseError, DatabaseManager, ItemId};
 
 fn main() -> Result<(), DatabaseError> {
-    let mut db = DatabaseManager::new(".", "database")?;
+  let mut db = DatabaseManager::new(".", "database")?;
 
     db.write_new(ItemId::id("notes.txt"), ItemId::database_id())?;
     db.overwrite_existing(ItemId::id("notes.txt"), b"hello world")?;
@@ -48,7 +34,16 @@ fn main() -> Result<(), DatabaseError> {
 }
 ```
 
-## Basics
+  ## `ItemId`
+  
+  An `ItemId` has two parts:
+  
+  - `name`: shared key (example: `"test_file.txt"`)
+  - `index`: stable slot under that shared key
+  
+  This means duplicate names are allowed. `ItemId::id("name")` always means index `0`. Use `ItemId::with_index("name", i)` for a specific slot.
+  
+  `ItemId::database_id()` is the root ID that refers to the database root directory.
 
 ### Create and organize
 
@@ -103,9 +98,9 @@ If files are changed outside this library (for example, another tool drops files
 
 Policy options:
 
-- `ScanPolicy::DetectOnly`: report new files, do not index them
-- `ScanPolicy::AddNew`: report and index new files
-- `ScanPolicy::RemoveNew`: report and delete new files from disk
+- `ScanPolicy::DetectOnly`: detect new files, do not index them
+- `ScanPolicy::AddNew`: detect and index new files
+- `ScanPolicy::RemoveNew`: delete new files from disk and do not keep them in the `added` list
 
 Important behavior: missing tracked items are always removed from the in-memory index during scan.
 
@@ -117,7 +112,7 @@ The result is `ScanReport` with:
 - `unchanged_count`
 - `total_changed_count`
 
-## `GenPath` helper
+## `GenPath`
 
 `GenPath` helps build base paths for database setup:
 
@@ -127,7 +122,7 @@ The result is `ScanReport` with:
 
 Example:
 
-```rust,no_run
+```rust
 use file_database::{DatabaseError, DatabaseManager, GenPath};
 
 fn main() -> Result<(), DatabaseError> {
@@ -154,9 +149,10 @@ Common variants include:
 
 ## Notes on indexing behavior
 
-- `index` is part of `ItemId` identity.
+- Internal storage is `HashMap<String, StableVec<PathBuf>>`.
+- `index` is a stable slot in the per-name `StableVec`, not a shifting position in a plain `Vec`.
 - Different `ItemId` values can share the same `name` and still point to different paths.
-- IDs do not drift when other entries are removed.
+- If one item is removed, other occupied slots keep their index.
 - If you need all IDs for one shared name, call `get_ids_by_name`.
 
 ## License
