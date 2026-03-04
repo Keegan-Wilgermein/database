@@ -13,7 +13,7 @@ It reduces the code needed for managing a file system by keeping track of everyt
 
 ```toml
 [dependencies]
-file_database = "1.0.0"
+file_database = "1.1.1"
 ```
 
 ## Quick start
