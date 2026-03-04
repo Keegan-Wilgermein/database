@@ -387,7 +387,10 @@ impl GenPath {
     pub fn from_closest_match(name: impl AsRef<Path>) -> Result<PathBuf, DatabaseError> {
         let exe = current_exe()?;
         let target = name.as_ref();
-        let target_name = target.as_os_str();
+        let target_name = match target.file_name() {
+            Some(name) => name,
+            None => return Err(DatabaseError::OsStringConversion)
+        };
 
         for path in exe.ancestors() {
             if !path.is_dir() {
@@ -409,9 +412,6 @@ impl GenPath {
                     };
 
                     let child_path = entry.path();
-                    if !child_path.is_dir() {
-                        continue;
-                    }
 
                     if entry.file_name() == target_name {
                         return Ok(child_path);
