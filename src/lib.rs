@@ -202,6 +202,9 @@ pub enum DatabaseError {
     /// Returned when converting an absolute path into a database-relative path fails.
     #[error(transparent)]
     PathBufConversion(#[from] std::path::StripPrefixError),
+    /// Returned when a path is invalid.
+    #[error("Invalid path")]
+    InvalidPath,
 }
 
 #[derive(Debug, PartialEq, Clone, Default)]
@@ -387,7 +390,10 @@ impl GenPath {
     pub fn from_closest_match(name: impl AsRef<Path>) -> Result<PathBuf, DatabaseError> {
         let exe = current_exe()?;
         let target = name.as_ref();
-        let target_name = target.as_os_str();
+
+        let target_name = target
+            .file_name()
+            .ok_or(DatabaseError::InvalidPath)?;
 
         for path in exe.ancestors() {
             if !path.is_dir() {
