@@ -409,10 +409,6 @@ impl GenPath {
                     };
 
                     let child_path = entry.path();
-                    if !child_path.is_dir() {
-                        continue;
-                    }
-
                     if entry.file_name() == target_name {
                         return Ok(child_path);
                     }
